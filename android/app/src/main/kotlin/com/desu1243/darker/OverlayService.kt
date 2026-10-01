@@ -90,6 +90,7 @@ class OverlayService : Service() {
     private var ocrInFlight = false
     private var captureGeneration = 0
     private var pendingFrameAvailable = false
+    private var stabilizingFadeRender = false
     private var deferredFrame: Image? = null
     private var deferredFrameSignature: IntArray? = null
 
@@ -99,6 +100,13 @@ class OverlayService : Service() {
 
     private val pendingFrameDrain = Runnable {
         processLatestPendingFrame()
+    }
+
+    private val fadeBaselineRefresh = Runnable {
+        // The animator has finished by now. Force one final composition frame
+        // so motion detection stores the fully revealed mask, never a partial
+        // fade frame, as its baseline.
+        overlayView?.invalidate()
     }
 
     override fun onCreate() {
@@ -234,14 +242,23 @@ class OverlayService : Service() {
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3).also { reader ->
             reader.setOnImageAvailableListener({ availableReader ->
-                if (ocrInFlight || SystemClock.uptimeMillis() < ignoreMotionUntilMs) {
+                val now = SystemClock.uptimeMillis()
+                if (ocrInFlight) {
                     // Leave frames queued inside ImageReader. Once OCR finishes
-                    // (and our own mask animation settles), acquireLatestImage()
-                    // gives us the newest frame instead of waiting for another
-                    // touch to produce one.
+                    // acquireLatestImage() gives us the newest frame instead
+                    // of waiting for another touch to produce one.
                     pendingFrameAvailable = true
-                    schedulePendingFrameDrain()
+                } else if (stabilizingFadeRender && now < ignoreMotionUntilMs) {
+                    // Keep consuming the fade frames so ImageReader cannot
+                    // become full on an intermediate animation frame. They are
+                    // produced by our overlay, so use the latest one only as a
+                    // new motion baseline and never treat it as user movement.
+                    availableReader.acquireLatestImage()?.use { image ->
+                        lastFrameSignature = createFrameSignature(image)
+                    }
+                    pendingFrameAvailable = false
                 } else {
+                    if (stabilizingFadeRender) stabilizingFadeRender = false
                     availableReader.acquireLatestImage()?.let { image ->
                         if (!acceptCapturedFrame(image)) image.close()
                     }
@@ -366,6 +383,7 @@ class OverlayService : Service() {
         val recognizer = textRecognizer ?: TextRecognition
             .getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
             .also { textRecognizer = it }
+        var fadeRenderStarted = false
 
         recognizer.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { result ->
@@ -382,15 +400,32 @@ class OverlayService : Service() {
                     bitmap.height,
                     animationMode == "fade",
                 )
+                fadeRenderStarted = updateMode == "afterMotionStops" &&
+                    animationMode == "fade"
+                stabilizingFadeRender = fadeRenderStarted
                 ignoreMotionUntilMs = SystemClock.uptimeMillis() +
-                    if (animationMode == "fade") 280L else 140L
+                    if (fadeRenderStarted) 650L
+                    else if (animationMode == "fade") 360L
+                    else 140L
+                if (fadeRenderStarted) {
+                    mainHandler.removeCallbacks(fadeBaselineRefresh)
+                    mainHandler.postDelayed(fadeBaselineRefresh, 260L)
+                }
                 Log.v(TAG, "OCR found ${boxes.size} text lines")
             }
             .addOnFailureListener { error -> Log.w(TAG, "OCR failed", error) }
             .addOnCompleteListener {
                 bitmap.recycle()
                 ocrInFlight = false
-                if (pendingFrameAvailable) schedulePendingFrameDrain()
+                if (fadeRenderStarted) {
+                    // Frames accumulated while OCR was running predate the new
+                    // mask. Drop them now, before the first rendered fade frame,
+                    // so the producer can deliver the whole animation and its
+                    // settled final state.
+                    discardPendingFrames()
+                } else if (pendingFrameAvailable) {
+                    schedulePendingFrameDrain()
+                }
             }
     }
 
@@ -421,6 +456,11 @@ class OverlayService : Service() {
         mainHandler.postDelayed(pendingFrameDrain, delay)
     }
 
+    private fun discardPendingFrames() {
+        imageReader?.acquireLatestImage()?.close()
+        pendingFrameAvailable = false
+    }
+
     private fun processLatestPendingFrame() {
         if (ocrInFlight) return
         val reader = imageReader ?: return
@@ -430,6 +470,7 @@ class OverlayService : Service() {
             return
         }
         pendingFrameAvailable = false
+        stabilizingFadeRender = false
         if (!acceptCapturedFrame(image)) image.close()
     }
 
@@ -452,8 +493,10 @@ class OverlayService : Service() {
         isCaptureRunning = false
         ocrInFlight = false
         pendingFrameAvailable = false
+        stabilizingFadeRender = false
         mainHandler.removeCallbacks(stabilityCheck)
         mainHandler.removeCallbacks(pendingFrameDrain)
+        mainHandler.removeCallbacks(fadeBaselineRefresh)
         deferredFrame?.close()
         deferredFrame = null
         deferredFrameSignature = null
