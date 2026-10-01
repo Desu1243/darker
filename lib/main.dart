@@ -40,9 +40,11 @@ class DimmerPage extends StatefulWidget {
 
 class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   static const _channel = MethodChannel('com.desu1243.darker/overlay');
-  static const _maxOpacity = 0.78;
+  static const _maxNativeOverlayOpacity = 0.78;
 
-  double _opacity = 0.45;
+  // User-facing opacity describes how visible the underlying screen remains:
+  // 100% means no dimming, while 0% means maximum safe dimming.
+  double _screenOpacity = 0.50;
   bool _textAware = false;
   bool _hasOverlayPermission = false;
   bool _overlayRunning = false;
@@ -81,7 +83,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       case 'onCapturePermissionDenied':
         setState(() => _busy = false);
         _showMessage(
-          'Bez zgody na przechwytywanie tryb Text Aware nie wystartuje.',
+          'Text Aware cannot start without screen capture permission.',
         );
     }
   }
@@ -101,14 +103,14 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
         _textAware = state?['textAware'] as bool? ?? _textAware;
         final nativeOpacity = state?['opacity'] as num?;
         if (_overlayRunning && nativeOpacity != null) {
-          _opacity = nativeOpacity.toDouble().clamp(0, _maxOpacity);
+          _screenOpacity = _screenOpacityFromNative(nativeOpacity.toDouble());
         }
         _busy = false;
       });
     } on PlatformException catch (error) {
       if (!mounted) return;
       setState(() => _busy = false);
-      _showMessage(error.message ?? 'Nie udało się odczytać stanu aplikacji.');
+      _showMessage(error.message ?? 'Could not read the application state.');
     } on MissingPluginException {
       if (mounted) setState(() => _busy = false);
     }
@@ -133,15 +135,13 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       } on PlatformException catch (error) {
         if (!mounted) return;
         setState(() => _busy = false);
-        _showMessage(error.message ?? 'Nie udało się zatrzymać nakładki.');
+        _showMessage(error.message ?? 'Could not stop the overlay.');
       }
       return;
     }
 
     if (!_hasOverlayPermission) {
-      _showMessage(
-        'Najpierw zezwól aplikacji na wyświetlanie nad innymi aplikacjami.',
-      );
+      _showMessage('Allow Darker to display over other apps first.');
       await _requestOverlayPermission();
       return;
     }
@@ -150,7 +150,10 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
     try {
       final response = await _channel.invokeMethod<Map<Object?, Object?>>(
         'startOverlay',
-        {'opacity': _opacity, 'textAware': _textAware},
+        {
+          'opacity': _nativeOpacityFromScreen(_screenOpacity),
+          'textAware': _textAware,
+        },
       );
       final waiting = response?['awaitingCapturePermission'] as bool? ?? false;
       if (!mounted) return;
@@ -163,18 +166,32 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
     } on PlatformException catch (error) {
       if (!mounted) return;
       setState(() => _busy = false);
-      _showMessage(error.message ?? 'Nie udało się uruchomić nakładki.');
+      _showMessage(error.message ?? 'Could not start the overlay.');
     }
   }
 
   Future<void> _updateOpacity(double value) async {
-    setState(() => _opacity = value);
+    setState(() => _screenOpacity = value);
     if (!_overlayRunning) return;
     try {
-      await _channel.invokeMethod<void>('updateOpacity', {'opacity': value});
+      await _channel.invokeMethod<void>('updateOpacity', {
+        'opacity': _nativeOpacityFromScreen(value),
+      });
     } on PlatformException catch (error) {
-      _showMessage(error.message ?? 'Nie udało się zmienić przyciemnienia.');
+      _showMessage(error.message ?? 'Could not update the opacity.');
     }
+  }
+
+  double _nativeOpacityFromScreen(double screenOpacity) {
+    return (1 - screenOpacity.clamp(0.0, 1.0)) * _maxNativeOverlayOpacity;
+  }
+
+  double _screenOpacityFromNative(double nativeOpacity) {
+    final safeNativeOpacity = nativeOpacity.clamp(
+      0.0,
+      _maxNativeOverlayOpacity,
+    );
+    return 1 - (safeNativeOpacity / _maxNativeOverlayOpacity);
   }
 
   void _showMessage(String message) {
@@ -186,7 +203,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final percentage = (_opacity * 100).round();
+    final percentage = (_screenOpacity * 100).round();
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -238,7 +255,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
-                        'Przyciemnienie',
+                        'Opacity',
                         style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w600,
@@ -256,10 +273,10 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 8),
                   Slider(
-                    value: _opacity,
+                    value: _screenOpacity,
                     min: 0,
-                    max: _maxOpacity,
-                    divisions: 78,
+                    max: 1,
+                    divisions: 100,
                     label: '$percentage%',
                     onChanged: _busy ? null : _updateOpacity,
                   ),
@@ -269,11 +286,11 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'Brak',
+                          'Maximum dimming',
                           style: TextStyle(color: Color(0xFF858894)),
                         ),
                         Text(
-                          'Bezpieczne maksimum',
+                          'No dimming',
                           style: TextStyle(color: Color(0xFF858894)),
                         ),
                       ],
@@ -293,8 +310,8 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                 subtitle: const Padding(
                   padding: EdgeInsets.only(top: 5),
                   child: Text(
-                    'Przygotuj przechwytywanie ekranu do wykrywania tekstu. '
-                    'Maska OCR zostanie dodana w kolejnym etapie.',
+                    'Prepare screen capture for text detection. The OCR mask '
+                    'will be added in the next milestone.',
                   ),
                 ),
                 value: _textAware,
@@ -327,7 +344,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                           : Icons.visibility_rounded,
                     ),
               label: Text(
-                _overlayRunning ? 'Wyłącz nakładkę' : 'Włącz nakładkę',
+                _overlayRunning ? 'Stop overlay' : 'Start overlay',
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
@@ -336,8 +353,8 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 14),
             const Text(
-              'Nakładka nie przechwytuje dotyku. Maksymalna wartość została '
-              'ograniczona do 78%, czyli nieco poniżej progu bezpieczeństwa Androida.',
+              'The overlay does not intercept touch. At 0% screen opacity, '
+              'dimming is capped slightly below Android\'s safety threshold.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Color(0xFF858894), height: 1.4),
             ),
@@ -379,10 +396,10 @@ class _StatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final label = !running
-        ? 'Nakładka wyłączona'
+        ? 'Overlay inactive'
         : captureRunning
-        ? 'Nakładka i Text Aware aktywne'
-        : 'Nakładka aktywna';
+        ? 'Overlay and Text Aware active'
+        : 'Overlay active';
     final color = running ? const Color(0xFF8FE3B1) : const Color(0xFF9A9DA8);
 
     return Container(
@@ -438,11 +455,9 @@ class _PermissionCard extends StatelessWidget {
           const Icon(Icons.layers_outlined, color: Color(0xFFFFC078)),
           const SizedBox(width: 13),
           const Expanded(
-            child: Text(
-              'Darker potrzebuje zgody na wyświetlanie nad innymi aplikacjami.',
-            ),
+            child: Text('Darker needs permission to display over other apps.'),
           ),
-          TextButton(onPressed: onPressed, child: const Text('Zezwól')),
+          TextButton(onPressed: onPressed, child: const Text('Allow')),
         ],
       ),
     );

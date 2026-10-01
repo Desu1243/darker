@@ -7,7 +7,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('Darker'), findsOneWidget);
-    expect(find.text('Przyciemnienie'), findsOneWidget);
+    expect(find.text('Opacity'), findsOneWidget);
     expect(find.text('Text Aware'), findsOneWidget);
     expect(find.byType(DimmerPage), findsOneWidget);
   });

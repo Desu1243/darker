@@ -75,7 +75,6 @@ class MainActivity : FlutterActivity() {
                             result.success(mapOf("awaitingCapturePermission" to true))
                         } else {
                             startOverlayService(pendingOpacity, textAware = false)
-                            moveTaskToBack(true)
                             result.success(mapOf("started" to true))
                         }
                     }
@@ -119,7 +118,6 @@ class MainActivity : FlutterActivity() {
             .putExtra(OverlayService.EXTRA_PROJECTION_DATA, data)
         ContextCompat.startForegroundService(this, captureIntent)
         methodChannel?.invokeMethod("onOverlayStarted", mapOf("textAware" to true))
-        moveTaskToBack(true)
     }
 
     private fun startOverlayService(opacity: Float, textAware: Boolean) {

@@ -6,7 +6,7 @@ the application underneath it.
 
 ## Current milestone
 
-- dimming range from 0% to 78%;
+- user-facing screen opacity from 0% to 100%;
 - explicit Android "display over other apps" permission flow;
 - live opacity changes while the overlay is active;
 - persistent foreground-service notification with a Stop action;
@@ -14,8 +14,10 @@ the application underneath it.
   throttled screen frames;
 - Flutter/native state synchronization through a method channel.
 
-The 78% limit is enforced in Kotlin as well as in Flutter. It leaves a small
-margin below Android's 0.80 maximum obscuring opacity for pass-through touches.
+Screen opacity is intentionally the inverse of the native black overlay alpha:
+100% means no dimming and 0% means maximum dimming. The underlying overlay
+alpha is capped at 78% in Kotlin, leaving a small margin below Android's 0.80
+maximum obscuring opacity for pass-through touches.
 
 Text recognition and transparent/partially dimmed text regions are intentionally
 reserved for the next milestone. The capture pipeline is already running and
