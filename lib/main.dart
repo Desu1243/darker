@@ -49,6 +49,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   // User-facing opacity describes how visible the underlying screen remains:
   // 100% means no dimming, while 0% means maximum safe dimming.
   double _screenOpacity = 0.50;
+  double _textOpacity = 0.75;
   bool _textAware = false;
   bool _hasOverlayPermission = false;
   bool _overlayRunning = false;
@@ -111,8 +112,14 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
         _captureRunning = state?['captureRunning'] as bool? ?? false;
         _textAware = state?['textAware'] as bool? ?? _textAware;
         final nativeOpacity = state?['opacity'] as num?;
+        final nativeTextDimAmount = state?['textDimAmount'] as num?;
         if (_overlayRunning && nativeOpacity != null) {
           _screenOpacity = _screenOpacityFromNative(nativeOpacity.toDouble());
+        }
+        if (_overlayRunning && nativeTextDimAmount != null) {
+          _textOpacity = _screenOpacityFromNative(
+            nativeTextDimAmount.toDouble(),
+          ).clamp(_screenOpacity, 1.0);
         }
         _busy = false;
       });
@@ -161,6 +168,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
         'startOverlay',
         {
           'opacity': _nativeOpacityFromScreen(_screenOpacity),
+          'textDimAmount': _nativeOpacityFromScreen(_textOpacity),
           'textAware': _textAware,
           'updateMode': _updateMode.name,
           'animationMode': _animationMode.name,
@@ -185,7 +193,10 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   }
 
   Future<void> _updateOpacity(double value) async {
-    setState(() => _screenOpacity = value);
+    setState(() {
+      _screenOpacity = value;
+      if (_textOpacity < value) _textOpacity = value;
+    });
     if (!_overlayRunning) return;
     try {
       await _channel.invokeMethod<void>('updateOpacity', {
@@ -193,6 +204,19 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       });
     } on PlatformException catch (error) {
       _showMessage(error.message ?? 'Could not update the opacity.');
+    }
+  }
+
+  Future<void> _updateTextOpacity(double value) async {
+    final safeValue = value.clamp(_screenOpacity, 1.0);
+    setState(() => _textOpacity = safeValue);
+    if (!_overlayRunning) return;
+    try {
+      await _channel.invokeMethod<void>('updateTextOpacity', {
+        'textDimAmount': _nativeOpacityFromScreen(safeValue),
+      });
+    } on PlatformException catch (error) {
+      _showMessage(error.message ?? 'Could not update the text opacity.');
     }
   }
 
@@ -218,6 +242,11 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final percentage = (_screenOpacity * 100).round();
+    final textPercentage = (_textOpacity * 100).round();
+    final textOpacityDivisions = ((1 - _screenOpacity) * 100).round().clamp(
+      1,
+      100,
+    );
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -340,6 +369,37 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                   ),
                   if (_textAware) ...[
                     const Divider(height: 32),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Text opacity',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          '$textPercentage%',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      value: _textOpacity.clamp(_screenOpacity, 1.0),
+                      min: _screenOpacity,
+                      max: 1,
+                      divisions: textOpacityDivisions,
+                      label: '$textPercentage%',
+                      onChanged: _busy || _screenOpacity >= 1
+                          ? null
+                          : _updateTextOpacity,
+                    ),
+                    const Text(
+                      'Controls brightness inside detected text areas. It cannot be darker than the rest of the screen.',
+                      style: TextStyle(color: Color(0xFF858894), height: 1.35),
+                    ),
+                    const SizedBox(height: 22),
                     const Text(
                       'Detection frequency',
                       style: TextStyle(fontWeight: FontWeight.w600),
@@ -489,14 +549,13 @@ class _Panel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xFF252832)),
+        side: const BorderSide(color: Color(0xFF252832)),
       ),
-      child: child,
+      child: Padding(padding: const EdgeInsets.all(18), child: child),
     );
   }
 }

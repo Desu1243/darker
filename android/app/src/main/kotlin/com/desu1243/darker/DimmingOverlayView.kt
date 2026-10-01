@@ -19,10 +19,13 @@ class DimmingOverlayView(context: Context) : View(context) {
     private val dimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val cutoutPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
+    }
+    private val maskCompositePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
     }
 
     private var dimAmount = 0f
+    private var textDimAmount = 0.175f
     private var textRegions: List<RectF> = emptyList()
     private var sourceWidth = 1
     private var sourceHeight = 1
@@ -38,6 +41,12 @@ class DimmingOverlayView(context: Context) : View(context) {
 
     fun setDimAmount(amount: Float) {
         dimAmount = amount.coerceIn(0f, OverlayService.MAX_DIM_AMOUNT)
+        textDimAmount = textDimAmount.coerceAtMost(dimAmount)
+        invalidate()
+    }
+
+    fun setTextDimAmount(amount: Float) {
+        textDimAmount = amount.coerceIn(0f, dimAmount)
         invalidate()
     }
 
@@ -101,7 +110,22 @@ class DimmingOverlayView(context: Context) : View(context) {
             val scaledMarginY = marginPx
             val radius = cornerRadiusPx
 
-            cutoutPaint.alpha = (255f * revealProgress).toInt().coerceIn(0, 255)
+            val removalFraction = if (dimAmount > 0f) {
+                (1f - textDimAmount / dimAmount).coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+            maskCompositePaint.alpha = (255f * revealProgress * removalFraction)
+                .toInt()
+                .coerceIn(0, 255)
+            val maskLayer = canvas.saveLayer(
+                0f,
+                0f,
+                width.toFloat(),
+                height.toFloat(),
+                maskCompositePaint,
+            )
+            cutoutPaint.alpha = 255
             cutoutPaint.maskFilter = if (featherPx > 0f) {
                 BlurMaskFilter(featherPx, BlurMaskFilter.Blur.NORMAL)
             } else {
@@ -119,6 +143,7 @@ class DimmingOverlayView(context: Context) : View(context) {
                 canvas.drawRoundRect(region, safeRadius, safeRadius, cutoutPaint)
             }
             cutoutPaint.maskFilter = null
+            canvas.restoreToCount(maskLayer)
         }
         canvas.restoreToCount(layer)
     }

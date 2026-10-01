@@ -36,10 +36,13 @@ class OverlayService : Service() {
     companion object {
         const val ACTION_START = "com.desu1243.darker.action.START"
         const val ACTION_UPDATE_OPACITY = "com.desu1243.darker.action.UPDATE_OPACITY"
+        const val ACTION_UPDATE_TEXT_OPACITY =
+            "com.desu1243.darker.action.UPDATE_TEXT_OPACITY"
         const val ACTION_STOP = "com.desu1243.darker.action.STOP"
         const val ACTION_START_CAPTURE = "com.desu1243.darker.action.START_CAPTURE"
 
         const val EXTRA_OPACITY = "opacity"
+        const val EXTRA_TEXT_DIM_AMOUNT = "textDimAmount"
         const val EXTRA_TEXT_AWARE = "textAware"
         const val EXTRA_PROJECTION_RESULT_CODE = "projectionResultCode"
         const val EXTRA_PROJECTION_DATA = "projectionData"
@@ -58,6 +61,8 @@ class OverlayService : Service() {
         @Volatile var isCaptureRunning = false
             private set
         @Volatile var currentOpacity = 0.35f
+            private set
+        @Volatile var currentTextDimAmount = 0.175f
             private set
         @Volatile var isTextAwareEnabled = false
             private set
@@ -121,10 +126,16 @@ class OverlayService : Service() {
             ACTION_UPDATE_OPACITY -> updateOpacity(
                 intent.getFloatExtra(EXTRA_OPACITY, currentOpacity)
             )
+            ACTION_UPDATE_TEXT_OPACITY -> updateTextDimAmount(
+                intent.getFloatExtra(EXTRA_TEXT_DIM_AMOUNT, currentTextDimAmount)
+            )
             ACTION_START_CAPTURE -> startCapture(intent)
             ACTION_START, null -> {
                 currentOpacity = intent?.getFloatExtra(EXTRA_OPACITY, currentOpacity)
                     ?.coerceIn(0f, MAX_DIM_AMOUNT) ?: currentOpacity
+                currentTextDimAmount = intent
+                    ?.getFloatExtra(EXTRA_TEXT_DIM_AMOUNT, currentTextDimAmount)
+                    ?.coerceIn(0f, currentOpacity) ?: currentTextDimAmount
                 isTextAwareEnabled = intent?.getBooleanExtra(EXTRA_TEXT_AWARE, false) ?: false
                 updateMode = intent?.getStringExtra(EXTRA_UPDATE_MODE) ?: "continuous"
                 animationMode = intent?.getStringExtra(EXTRA_ANIMATION_MODE) ?: "instant"
@@ -159,6 +170,7 @@ class OverlayService : Service() {
             // by the pixel alpha of this background instead.
             overlayView = DimmingOverlayView(this).apply {
                 setDimAmount(currentOpacity)
+                setTextDimAmount(currentTextDimAmount)
                 setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
             }
             overlayParams = WindowManager.LayoutParams(
@@ -188,6 +200,7 @@ class OverlayService : Service() {
             windowManager.addView(overlayView, overlayParams)
         } else {
             updateOpacity(currentOpacity)
+            overlayView?.setTextDimAmount(currentTextDimAmount)
             overlayView?.setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
         }
         isRunning = true
@@ -195,8 +208,15 @@ class OverlayService : Service() {
 
     private fun updateOpacity(requestedOpacity: Float) {
         currentOpacity = requestedOpacity.coerceIn(0f, MAX_DIM_AMOUNT)
+        currentTextDimAmount = currentTextDimAmount.coerceAtMost(currentOpacity)
         val view = overlayView ?: return
         view.setDimAmount(currentOpacity)
+        view.setTextDimAmount(currentTextDimAmount)
+    }
+
+    private fun updateTextDimAmount(requestedAmount: Float) {
+        currentTextDimAmount = requestedAmount.coerceIn(0f, currentOpacity)
+        overlayView?.setTextDimAmount(currentTextDimAmount)
     }
 
     private fun removeOverlay() {

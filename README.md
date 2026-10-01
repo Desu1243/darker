@@ -12,6 +12,7 @@ the application underneath it.
 - persistent foreground-service notification with a Stop action;
 - optional Text Aware mode with on-device ML Kit OCR and softly feathered text
   cut-outs;
+- independent text-area opacity, adjustable live while the overlay is active;
 - continuous recognition or recognition after visible screen movement stops;
 - instant and fade transitions plus configurable margin, radius, and softness;
 - Flutter/native state synchronization through a method channel.

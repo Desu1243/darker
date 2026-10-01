@@ -21,6 +21,7 @@ class MainActivity : FlutterActivity() {
     private lateinit var projectionManager: MediaProjectionManager
     private var methodChannel: MethodChannel? = null
     private var pendingOpacity = 0.35f
+    private var pendingTextDimAmount = 0.175f
     private var pendingUpdateMode = "continuous"
     private var pendingAnimationMode = "instant"
     private var pendingTextMarginDp = 12f
@@ -55,6 +56,7 @@ class MainActivity : FlutterActivity() {
                             "running" to OverlayService.isRunning,
                             "captureRunning" to OverlayService.isCaptureRunning,
                             "opacity" to OverlayService.currentOpacity.toDouble(),
+                            "textDimAmount" to OverlayService.currentTextDimAmount.toDouble(),
                             "textAware" to OverlayService.isTextAwareEnabled
                         )
                     )
@@ -70,6 +72,9 @@ class MainActivity : FlutterActivity() {
                         pendingOpacity = ((call.argument<Double>("opacity") ?: 0.35)
                             .toFloat())
                             .coerceIn(0f, OverlayService.MAX_DIM_AMOUNT)
+                        pendingTextDimAmount =
+                            ((call.argument<Double>("textDimAmount") ?: 0.175).toFloat())
+                                .coerceIn(0f, pendingOpacity)
                         val textAware = call.argument<Boolean>("textAware") ?: false
                         pendingUpdateMode =
                             call.argument<String>("updateMode") ?: "continuous"
@@ -100,6 +105,17 @@ class MainActivity : FlutterActivity() {
                             Intent(this, OverlayService::class.java)
                                 .setAction(OverlayService.ACTION_UPDATE_OPACITY)
                                 .putExtra(OverlayService.EXTRA_OPACITY, opacity)
+                        )
+                        result.success(null)
+                    }
+                    "updateTextOpacity" -> {
+                        val textDimAmount =
+                            ((call.argument<Double>("textDimAmount") ?: 0.175).toFloat())
+                                .coerceIn(0f, OverlayService.MAX_DIM_AMOUNT)
+                        startService(
+                            Intent(this, OverlayService::class.java)
+                                .setAction(OverlayService.ACTION_UPDATE_TEXT_OPACITY)
+                                .putExtra(OverlayService.EXTRA_TEXT_DIM_AMOUNT, textDimAmount)
                         )
                         result.success(null)
                     }
@@ -139,6 +155,7 @@ class MainActivity : FlutterActivity() {
         val intent = Intent(this, OverlayService::class.java)
             .setAction(OverlayService.ACTION_START)
             .putExtra(OverlayService.EXTRA_OPACITY, opacity)
+            .putExtra(OverlayService.EXTRA_TEXT_DIM_AMOUNT, pendingTextDimAmount)
             .putExtra(OverlayService.EXTRA_TEXT_AWARE, textAware)
             .putExtra(OverlayService.EXTRA_UPDATE_MODE, pendingUpdateMode)
             .putExtra(OverlayService.EXTRA_ANIMATION_MODE, pendingAnimationMode)
