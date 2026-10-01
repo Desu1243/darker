@@ -83,14 +83,23 @@ class OverlayService : Service() {
     private var imageReader: ImageReader? = null
     private var textRecognizer: TextRecognizer? = null
     private var lastSampleAtMs = 0L
-    private var lastMotionAtMs = 0L
     private var lastOcrAtMs = 0L
     private var ignoreMotionUntilMs = 0L
     private var lastFrameSignature: IntArray? = null
-    private var lastOcrSignature: IntArray? = null
     private var motionActive = false
     private var ocrInFlight = false
     private var captureGeneration = 0
+    private var pendingFrameAvailable = false
+    private var deferredFrame: Image? = null
+    private var deferredFrameSignature: IntArray? = null
+
+    private val stabilityCheck = Runnable {
+        processDeferredFrame()
+    }
+
+    private val pendingFrameDrain = Runnable {
+        processLatestPendingFrame()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -223,9 +232,20 @@ class OverlayService : Service() {
         val width = bounds?.width() ?: metrics.widthPixels
         val height = bounds?.height() ?: metrics.heightPixels
 
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2).also { reader ->
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3).also { reader ->
             reader.setOnImageAvailableListener({ availableReader ->
-                availableReader.acquireLatestImage()?.use(::acceptCapturedFrame)
+                if (ocrInFlight || SystemClock.uptimeMillis() < ignoreMotionUntilMs) {
+                    // Leave frames queued inside ImageReader. Once OCR finishes
+                    // (and our own mask animation settles), acquireLatestImage()
+                    // gives us the newest frame instead of waiting for another
+                    // touch to produce one.
+                    pendingFrameAvailable = true
+                    schedulePendingFrameDrain()
+                } else {
+                    availableReader.acquireLatestImage()?.let { image ->
+                        if (!acceptCapturedFrame(image)) image.close()
+                    }
+                }
             }, mainHandler)
         }
 
@@ -243,9 +263,10 @@ class OverlayService : Service() {
         Log.i(TAG, "Screen capture started: ${width}x$height")
     }
 
-    private fun acceptCapturedFrame(image: Image) {
+    /** Returns true when ownership of [image] was retained for deferred OCR. */
+    private fun acceptCapturedFrame(image: Image): Boolean {
         val now = SystemClock.uptimeMillis()
-        if (now - lastSampleAtMs < 100L) return
+        if (now - lastSampleAtMs < 100L) return false
         lastSampleAtMs = now
 
         val signature = createFrameSignature(image)
@@ -255,19 +276,28 @@ class OverlayService : Service() {
         // A full-display projection may include our own overlay. Ignore the
         // short visual change caused by revealing new cut-outs so it cannot be
         // mistaken for user-driven scrolling.
-        if (now < ignoreMotionUntilMs) return
+        if (now < ignoreMotionUntilMs) {
+            pendingFrameAvailable = true
+            schedulePendingFrameDrain()
+            return false
+        }
 
         if (previous == null) {
-            lastMotionAtMs = now
-            motionActive = true
-            if (updateMode == "continuous") startOcr(image, signature, now)
-            return
+            if (updateMode == "continuous") {
+                startOcr(image, signature, now)
+            } else {
+                // There is no gesture to wait for when capture first starts.
+                // Showing the first set of cut-outs immediately also makes the
+                // feature feel responsive before the user touches the screen.
+                motionActive = false
+                startOcr(image, signature, now)
+            }
+            return false
         }
 
         val frameDifference = signatureDifference(previous, signature)
         val frameMoved = frameDifference >= 5.0
         if (frameMoved) {
-            lastMotionAtMs = now
             if (!motionActive) {
                 motionActive = true
                 overlayView?.hideTextRegions(animationMode == "fade")
@@ -276,18 +306,23 @@ class OverlayService : Service() {
 
         when (updateMode) {
             "afterMotionStops" -> {
-                if (!frameMoved && now - lastMotionAtMs >= 300L) {
-                    motionActive = false
-                    val changedSinceOcr = lastOcrSignature?.let {
-                        signatureDifference(it, signature) >= 2.0
-                    } ?: true
-                    if (changedSinceOcr) startOcr(image, signature, now)
+                if (frameMoved || motionActive) {
+                    // Keep precisely one acquired image: the newest candidate
+                    // for OCR after movement stops. Replacing it avoids a
+                    // stream of full-screen bitmap allocations while scrolling.
+                    deferredFrame?.close()
+                    deferredFrame = image
+                    deferredFrameSignature = signature
+
+                    if (frameMoved) scheduleStabilityCheck(300L)
+                    return true
                 }
             }
             else -> {
                 if (now - lastOcrAtMs >= 400L) startOcr(image, signature, now)
             }
         }
+        return false
     }
 
     private fun createFrameSignature(image: Image): IntArray {
@@ -341,7 +376,6 @@ class OverlayService : Service() {
                 result.textBlocks.forEach { block ->
                     block.lines.forEach { line -> line.boundingBox?.let { boxes.add(Rect(it)) } }
                 }
-                lastOcrSignature = signature
                 overlayView?.setTextRegions(
                     boxes,
                     bitmap.width,
@@ -356,7 +390,47 @@ class OverlayService : Service() {
             .addOnCompleteListener {
                 bitmap.recycle()
                 ocrInFlight = false
+                if (pendingFrameAvailable) schedulePendingFrameDrain()
             }
+    }
+
+    private fun scheduleStabilityCheck(delayMs: Long) {
+        if (updateMode != "afterMotionStops") return
+        mainHandler.removeCallbacks(stabilityCheck)
+        mainHandler.postDelayed(stabilityCheck, delayMs)
+    }
+
+    private fun processDeferredFrame() {
+        val image = deferredFrame ?: return
+        val signature = deferredFrameSignature ?: run {
+            image.close()
+            deferredFrame = null
+            return
+        }
+        deferredFrame = null
+        deferredFrameSignature = null
+        motionActive = false
+        startOcr(image, signature, SystemClock.uptimeMillis())
+        image.close()
+    }
+
+    private fun schedulePendingFrameDrain() {
+        if (!pendingFrameAvailable || ocrInFlight || !isCaptureRunning) return
+        mainHandler.removeCallbacks(pendingFrameDrain)
+        val delay = (ignoreMotionUntilMs - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+        mainHandler.postDelayed(pendingFrameDrain, delay)
+    }
+
+    private fun processLatestPendingFrame() {
+        if (ocrInFlight) return
+        val reader = imageReader ?: return
+        val image = reader.acquireLatestImage()
+        if (image == null) {
+            pendingFrameAvailable = false
+            return
+        }
+        pendingFrameAvailable = false
+        if (!acceptCapturedFrame(image)) image.close()
     }
 
     private fun imageToBitmap(image: Image): Bitmap {
@@ -377,8 +451,13 @@ class OverlayService : Service() {
         captureGeneration++
         isCaptureRunning = false
         ocrInFlight = false
+        pendingFrameAvailable = false
+        mainHandler.removeCallbacks(stabilityCheck)
+        mainHandler.removeCallbacks(pendingFrameDrain)
+        deferredFrame?.close()
+        deferredFrame = null
+        deferredFrameSignature = null
         lastFrameSignature = null
-        lastOcrSignature = null
         motionActive = false
         ignoreMotionUntilMs = 0L
         overlayView?.clearTextRegions()
