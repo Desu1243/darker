@@ -1,5 +1,136 @@
 package com.desu1243.darker
 
+import android.app.Activity
+import android.content.Intent
+import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity()
+class MainActivity : FlutterActivity() {
+    companion object {
+        private const val CHANNEL = "com.desu1243.darker/overlay"
+        private const val PROJECTION_REQUEST_CODE = 4510
+    }
+
+    private lateinit var projectionManager: MediaProjectionManager
+    private var methodChannel: MethodChannel? = null
+    private var pendingOpacity = 0.45f
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+    }
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        methodChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "checkOverlayPermission" -> result.success(Settings.canDrawOverlays(this))
+                    "requestOverlayPermission" -> {
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                        )
+                        result.success(null)
+                    }
+                    "getOverlayState" -> result.success(
+                        mapOf(
+                            "running" to OverlayService.isRunning,
+                            "captureRunning" to OverlayService.isCaptureRunning,
+                            "opacity" to OverlayService.currentOpacity.toDouble(),
+                            "textAware" to OverlayService.isTextAwareEnabled
+                        )
+                    )
+                    "startOverlay" -> {
+                        if (!Settings.canDrawOverlays(this)) {
+                            result.error(
+                                "overlay_permission_missing",
+                                "Allow Darker to display over other apps first.",
+                                null
+                            )
+                            return@setMethodCallHandler
+                        }
+                        pendingOpacity = ((call.argument<Double>("opacity") ?: 0.45)
+                            .toFloat())
+                            .coerceIn(0f, OverlayService.MAX_SAFE_OPACITY)
+                        val textAware = call.argument<Boolean>("textAware") ?: false
+                        if (textAware) {
+                            @Suppress("DEPRECATION")
+                            startActivityForResult(
+                                projectionManager.createScreenCaptureIntent(),
+                                PROJECTION_REQUEST_CODE
+                            )
+                            result.success(mapOf("awaitingCapturePermission" to true))
+                        } else {
+                            startOverlayService(pendingOpacity, textAware = false)
+                            moveTaskToBack(true)
+                            result.success(mapOf("started" to true))
+                        }
+                    }
+                    "updateOpacity" -> {
+                        val opacity = ((call.argument<Double>("opacity") ?: 0.45).toFloat())
+                            .coerceIn(0f, OverlayService.MAX_SAFE_OPACITY)
+                        startService(
+                            Intent(this, OverlayService::class.java)
+                                .setAction(OverlayService.ACTION_UPDATE_OPACITY)
+                                .putExtra(OverlayService.EXTRA_OPACITY, opacity)
+                        )
+                        result.success(null)
+                    }
+                    "stopOverlay" -> {
+                        startService(
+                            Intent(this, OverlayService::class.java)
+                                .setAction(OverlayService.ACTION_STOP)
+                        )
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PROJECTION_REQUEST_CODE) return
+
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            methodChannel?.invokeMethod("onCapturePermissionDenied", null)
+            return
+        }
+
+        startOverlayService(pendingOpacity, textAware = true)
+        val captureIntent = Intent(this, OverlayService::class.java)
+            .setAction(OverlayService.ACTION_START_CAPTURE)
+            .putExtra(OverlayService.EXTRA_PROJECTION_RESULT_CODE, resultCode)
+            .putExtra(OverlayService.EXTRA_PROJECTION_DATA, data)
+        ContextCompat.startForegroundService(this, captureIntent)
+        methodChannel?.invokeMethod("onOverlayStarted", mapOf("textAware" to true))
+        moveTaskToBack(true)
+    }
+
+    private fun startOverlayService(opacity: Float, textAware: Boolean) {
+        val intent = Intent(this, OverlayService::class.java)
+            .setAction(OverlayService.ACTION_START)
+            .putExtra(OverlayService.EXTRA_OPACITY, opacity)
+            .putExtra(OverlayService.EXTRA_TEXT_AWARE, textAware)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ContextCompat.startForegroundService(this, intent)
+        } else {
+            startService(intent)
+        }
+    }
+}
