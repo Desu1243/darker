@@ -20,7 +20,12 @@ class MainActivity : FlutterActivity() {
 
     private lateinit var projectionManager: MediaProjectionManager
     private var methodChannel: MethodChannel? = null
-    private var pendingOpacity = 0.45f
+    private var pendingOpacity = 0.35f
+    private var pendingUpdateMode = "continuous"
+    private var pendingAnimationMode = "instant"
+    private var pendingTextMarginDp = 12f
+    private var pendingCornerRadiusDp = 10f
+    private var pendingFeatherDp = 12f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,10 +67,20 @@ class MainActivity : FlutterActivity() {
                             )
                             return@setMethodCallHandler
                         }
-                        pendingOpacity = ((call.argument<Double>("opacity") ?: 0.45)
+                        pendingOpacity = ((call.argument<Double>("opacity") ?: 0.35)
                             .toFloat())
-                            .coerceIn(0f, OverlayService.MAX_SAFE_OPACITY)
+                            .coerceIn(0f, OverlayService.MAX_DIM_AMOUNT)
                         val textAware = call.argument<Boolean>("textAware") ?: false
+                        pendingUpdateMode =
+                            call.argument<String>("updateMode") ?: "continuous"
+                        pendingAnimationMode =
+                            call.argument<String>("animationMode") ?: "instant"
+                        pendingTextMarginDp =
+                            (call.argument<Double>("textMarginDp") ?: 12.0).toFloat()
+                        pendingCornerRadiusDp =
+                            (call.argument<Double>("cornerRadiusDp") ?: 10.0).toFloat()
+                        pendingFeatherDp =
+                            (call.argument<Double>("featherDp") ?: 12.0).toFloat()
                         if (textAware) {
                             @Suppress("DEPRECATION")
                             startActivityForResult(
@@ -79,8 +94,8 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "updateOpacity" -> {
-                        val opacity = ((call.argument<Double>("opacity") ?: 0.45).toFloat())
-                            .coerceIn(0f, OverlayService.MAX_SAFE_OPACITY)
+                        val opacity = ((call.argument<Double>("opacity") ?: 0.35).toFloat())
+                            .coerceIn(0f, OverlayService.MAX_DIM_AMOUNT)
                         startService(
                             Intent(this, OverlayService::class.java)
                                 .setAction(OverlayService.ACTION_UPDATE_OPACITY)
@@ -125,6 +140,11 @@ class MainActivity : FlutterActivity() {
             .setAction(OverlayService.ACTION_START)
             .putExtra(OverlayService.EXTRA_OPACITY, opacity)
             .putExtra(OverlayService.EXTRA_TEXT_AWARE, textAware)
+            .putExtra(OverlayService.EXTRA_UPDATE_MODE, pendingUpdateMode)
+            .putExtra(OverlayService.EXTRA_ANIMATION_MODE, pendingAnimationMode)
+            .putExtra(OverlayService.EXTRA_TEXT_MARGIN_DP, pendingTextMarginDp)
+            .putExtra(OverlayService.EXTRA_CORNER_RADIUS_DP, pendingCornerRadiusDp)
+            .putExtra(OverlayService.EXTRA_FEATHER_DP, pendingFeatherDp)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ContextCompat.startForegroundService(this, intent)
         } else {

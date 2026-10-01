@@ -38,9 +38,13 @@ class DimmerPage extends StatefulWidget {
   State<DimmerPage> createState() => _DimmerPageState();
 }
 
+enum TextAwareUpdateMode { continuous, afterMotionStops }
+
+enum TextAwareAnimationMode { instant, fade }
+
 class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   static const _channel = MethodChannel('com.desu1243.darker/overlay');
-  static const _maxNativeOverlayOpacity = 0.78;
+  static const _maxNativeOverlayOpacity = 0.70;
 
   // User-facing opacity describes how visible the underlying screen remains:
   // 100% means no dimming, while 0% means maximum safe dimming.
@@ -50,6 +54,11 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   bool _overlayRunning = false;
   bool _captureRunning = false;
   bool _busy = true;
+  TextAwareUpdateMode _updateMode = TextAwareUpdateMode.continuous;
+  TextAwareAnimationMode _animationMode = TextAwareAnimationMode.instant;
+  double _textMargin = 12;
+  double _cornerRadius = 10;
+  double _edgeSoftness = 12;
 
   @override
   void initState() {
@@ -153,6 +162,11 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
         {
           'opacity': _nativeOpacityFromScreen(_screenOpacity),
           'textAware': _textAware,
+          'updateMode': _updateMode.name,
+          'animationMode': _animationMode.name,
+          'textMarginDp': _textMargin,
+          'cornerRadiusDp': _cornerRadius,
+          'featherDp': _edgeSoftness,
         },
       );
       final waiting = response?['awaitingCapturePermission'] as bool? ?? false;
@@ -301,23 +315,127 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 14),
             _Panel(
-              child: SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text(
-                  'Text Aware',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                ),
-                subtitle: const Padding(
-                  padding: EdgeInsets.only(top: 5),
-                  child: Text(
-                    'Prepare screen capture for text detection. The OCR mask '
-                    'will be added in the next milestone.',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Text Aware',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: const Padding(
+                      padding: EdgeInsets.only(top: 5),
+                      child: Text(
+                        'Detect text on screen and keep its surroundings clear.',
+                      ),
+                    ),
+                    value: _textAware,
+                    onChanged: _overlayRunning || _busy
+                        ? null
+                        : (value) => setState(() => _textAware = value),
                   ),
-                ),
-                value: _textAware,
-                onChanged: _overlayRunning || _busy
-                    ? null
-                    : (value) => setState(() => _textAware = value),
+                  if (_textAware) ...[
+                    const Divider(height: 32),
+                    const Text(
+                      'Detection frequency',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: SegmentedButton<TextAwareUpdateMode>(
+                        segments: const [
+                          ButtonSegment(
+                            value: TextAwareUpdateMode.continuous,
+                            label: Text('Continuous'),
+                            icon: Icon(Icons.sync_rounded),
+                          ),
+                          ButtonSegment(
+                            value: TextAwareUpdateMode.afterMotionStops,
+                            label: Text('After movement'),
+                            icon: Icon(Icons.touch_app_outlined),
+                          ),
+                        ],
+                        selected: {_updateMode},
+                        onSelectionChanged: _overlayRunning || _busy
+                            ? null
+                            : (selection) =>
+                                  setState(() => _updateMode = selection.first),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _updateMode == TextAwareUpdateMode.continuous
+                          ? 'OCR updates as quickly as the device can process frames.'
+                          : 'OCR runs about 300 ms after visible movement stops.',
+                      style: const TextStyle(
+                        color: Color(0xFF858894),
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    const Text(
+                      'Transition',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: SegmentedButton<TextAwareAnimationMode>(
+                        segments: const [
+                          ButtonSegment(
+                            value: TextAwareAnimationMode.instant,
+                            label: Text('Instant'),
+                          ),
+                          ButtonSegment(
+                            value: TextAwareAnimationMode.fade,
+                            label: Text('Fade'),
+                          ),
+                        ],
+                        selected: {_animationMode},
+                        onSelectionChanged: _overlayRunning || _busy
+                            ? null
+                            : (selection) => setState(
+                                () => _animationMode = selection.first,
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    _StyleSlider(
+                      label: 'Text margin',
+                      value: _textMargin,
+                      min: 0,
+                      max: 32,
+                      suffix: 'dp',
+                      enabled: !_overlayRunning && !_busy,
+                      onChanged: (value) => setState(() => _textMargin = value),
+                    ),
+                    _StyleSlider(
+                      label: 'Corner radius',
+                      value: _cornerRadius,
+                      min: 0,
+                      max: 32,
+                      suffix: 'dp',
+                      enabled: !_overlayRunning && !_busy,
+                      onChanged: (value) =>
+                          setState(() => _cornerRadius = value),
+                    ),
+                    _StyleSlider(
+                      label: 'Edge softness',
+                      value: _edgeSoftness,
+                      min: 0,
+                      max: 32,
+                      suffix: 'dp',
+                      enabled: !_overlayRunning && !_busy,
+                      onChanged: (value) =>
+                          setState(() => _edgeSoftness = value),
+                    ),
+                  ],
+                ],
               ),
             ),
             if (!_hasOverlayPermission) ...[
@@ -354,7 +472,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
             const SizedBox(height: 14),
             const Text(
               'The overlay does not intercept touch. At 0% screen opacity, '
-              'dimming is capped slightly below Android\'s safety threshold.',
+              'maximum dimming is capped at 70% for comfortable reading.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Color(0xFF858894), height: 1.4),
             ),
@@ -379,6 +497,51 @@ class _Panel extends StatelessWidget {
         border: Border.all(color: const Color(0xFF252832)),
       ),
       child: child,
+    );
+  }
+}
+
+class _StyleSlider extends StatelessWidget {
+  const _StyleSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.suffix,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final String suffix;
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label),
+            Text(
+              '${value.round()} $suffix',
+              style: TextStyle(color: Theme.of(context).colorScheme.primary),
+            ),
+          ],
+        ),
+        Slider(
+          value: value,
+          min: min,
+          max: max,
+          divisions: (max - min).round(),
+          onChanged: enabled ? onChanged : null,
+        ),
+      ],
     );
   }
 }

@@ -8,8 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Color
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -20,11 +21,16 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
-import android.view.View
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlin.math.abs
 
 class OverlayService : Service() {
     companion object {
@@ -37,16 +43,21 @@ class OverlayService : Service() {
         const val EXTRA_TEXT_AWARE = "textAware"
         const val EXTRA_PROJECTION_RESULT_CODE = "projectionResultCode"
         const val EXTRA_PROJECTION_DATA = "projectionData"
+        const val EXTRA_UPDATE_MODE = "updateMode"
+        const val EXTRA_ANIMATION_MODE = "animationMode"
+        const val EXTRA_TEXT_MARGIN_DP = "textMarginDp"
+        const val EXTRA_CORNER_RADIUS_DP = "cornerRadiusDp"
+        const val EXTRA_FEATHER_DP = "featherDp"
 
-        // Android rejects pass-through touches above 0.80 obscuring opacity.
-        // 0.78 leaves a small safety margin for vendor-specific behaviour.
-        const val MAX_SAFE_OPACITY = 0.78f
+        // Keep the overlay window slightly below Android's 0.80 maximum
+        // obscuring opacity so touches can pass to applications underneath.
+        const val MAX_DIM_AMOUNT = 0.70f
 
         @Volatile var isRunning = false
             private set
         @Volatile var isCaptureRunning = false
             private set
-        @Volatile var currentOpacity = 0.45f
+        @Volatile var currentOpacity = 0.35f
             private set
         @Volatile var isTextAwareEnabled = false
             private set
@@ -58,13 +69,28 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var overlayView: View? = null
+    private var overlayView: DimmingOverlayView? = null
     private var overlayParams: WindowManager.LayoutParams? = null
+
+    private var updateMode = "continuous"
+    private var animationMode = "instant"
+    private var textMarginDp = 12f
+    private var cornerRadiusDp = 10f
+    private var featherDp = 12f
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
-    private var lastAcceptedFrameNanos = 0L
+    private var textRecognizer: TextRecognizer? = null
+    private var lastSampleAtMs = 0L
+    private var lastMotionAtMs = 0L
+    private var lastOcrAtMs = 0L
+    private var ignoreMotionUntilMs = 0L
+    private var lastFrameSignature: IntArray? = null
+    private var lastOcrSignature: IntArray? = null
+    private var motionActive = false
+    private var ocrInFlight = false
+    private var captureGeneration = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -81,8 +107,13 @@ class OverlayService : Service() {
             ACTION_START_CAPTURE -> startCapture(intent)
             ACTION_START, null -> {
                 currentOpacity = intent?.getFloatExtra(EXTRA_OPACITY, currentOpacity)
-                    ?.coerceIn(0f, MAX_SAFE_OPACITY) ?: currentOpacity
+                    ?.coerceIn(0f, MAX_DIM_AMOUNT) ?: currentOpacity
                 isTextAwareEnabled = intent?.getBooleanExtra(EXTRA_TEXT_AWARE, false) ?: false
+                updateMode = intent?.getStringExtra(EXTRA_UPDATE_MODE) ?: "continuous"
+                animationMode = intent?.getStringExtra(EXTRA_ANIMATION_MODE) ?: "instant"
+                textMarginDp = intent?.getFloatExtra(EXTRA_TEXT_MARGIN_DP, 12f) ?: 12f
+                cornerRadiusDp = intent?.getFloatExtra(EXTRA_CORNER_RADIUS_DP, 10f) ?: 10f
+                featherDp = intent?.getFloatExtra(EXTRA_FEATHER_DP, 12f) ?: 12f
                 startAsForeground(withMediaProjection = false)
                 showOverlay()
             }
@@ -94,6 +125,8 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         releaseCapture()
+        textRecognizer?.close()
+        textRecognizer = null
         removeOverlay()
         isRunning = false
         isTextAwareEnabled = false
@@ -102,7 +135,15 @@ class OverlayService : Service() {
 
     private fun showOverlay() {
         if (overlayView == null) {
-            overlayView = View(this).apply { setBackgroundColor(Color.BLACK) }
+            // The window alpha remains constant for the lifetime of the
+            // overlay. Changing it from exactly zero to a non-zero value can
+            // switch the HWC/GPU composition path and cause a large brightness
+            // jump on some physical displays. Dimming is therefore controlled
+            // by the pixel alpha of this background instead.
+            overlayView = DimmingOverlayView(this).apply {
+                setDimAmount(currentOpacity)
+                setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
+            }
             overlayParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -119,7 +160,9 @@ class OverlayService : Service() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                alpha = currentOpacity
+                // This value is used by Android's touch-obscuring check. It is
+                // deliberately constant and remains below the 0.80 limit.
+                alpha = MAX_DIM_AMOUNT
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -128,16 +171,15 @@ class OverlayService : Service() {
             windowManager.addView(overlayView, overlayParams)
         } else {
             updateOpacity(currentOpacity)
+            overlayView?.setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
         }
         isRunning = true
     }
 
     private fun updateOpacity(requestedOpacity: Float) {
-        currentOpacity = requestedOpacity.coerceIn(0f, MAX_SAFE_OPACITY)
+        currentOpacity = requestedOpacity.coerceIn(0f, MAX_DIM_AMOUNT)
         val view = overlayView ?: return
-        val params = overlayParams ?: return
-        params.alpha = currentOpacity
-        runCatching { windowManager.updateViewLayout(view, params) }
+        view.setDimAmount(currentOpacity)
     }
 
     private fun removeOverlay() {
@@ -201,20 +243,145 @@ class OverlayService : Service() {
         Log.i(TAG, "Screen capture started: ${width}x$height")
     }
 
-    /**
-     * The capture pipeline is intentionally ready before OCR is introduced.
-     * Frames are throttled here; the next milestone will turn accepted frames
-     * into text bounds and update a cut-out mask in the overlay view.
-     */
     private fun acceptCapturedFrame(image: Image) {
-        val timestamp = image.timestamp
-        if (timestamp - lastAcceptedFrameNanos < 300_000_000L) return
-        lastAcceptedFrameNanos = timestamp
-        Log.v(TAG, "Captured frame ${image.width}x${image.height}")
+        val now = SystemClock.uptimeMillis()
+        if (now - lastSampleAtMs < 100L) return
+        lastSampleAtMs = now
+
+        val signature = createFrameSignature(image)
+        val previous = lastFrameSignature
+        lastFrameSignature = signature
+
+        // A full-display projection may include our own overlay. Ignore the
+        // short visual change caused by revealing new cut-outs so it cannot be
+        // mistaken for user-driven scrolling.
+        if (now < ignoreMotionUntilMs) return
+
+        if (previous == null) {
+            lastMotionAtMs = now
+            motionActive = true
+            if (updateMode == "continuous") startOcr(image, signature, now)
+            return
+        }
+
+        val frameDifference = signatureDifference(previous, signature)
+        val frameMoved = frameDifference >= 5.0
+        if (frameMoved) {
+            lastMotionAtMs = now
+            if (!motionActive) {
+                motionActive = true
+                overlayView?.hideTextRegions(animationMode == "fade")
+            }
+        }
+
+        when (updateMode) {
+            "afterMotionStops" -> {
+                if (!frameMoved && now - lastMotionAtMs >= 300L) {
+                    motionActive = false
+                    val changedSinceOcr = lastOcrSignature?.let {
+                        signatureDifference(it, signature) >= 2.0
+                    } ?: true
+                    if (changedSinceOcr) startOcr(image, signature, now)
+                }
+            }
+            else -> {
+                if (now - lastOcrAtMs >= 400L) startOcr(image, signature, now)
+            }
+        }
+    }
+
+    private fun createFrameSignature(image: Image): IntArray {
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val columns = 18
+        val rows = 32
+        val signature = IntArray(columns * rows)
+
+        for (row in 0 until rows) {
+            val y = ((row + 0.5f) * image.height / rows).toInt()
+                .coerceIn(0, image.height - 1)
+            for (column in 0 until columns) {
+                val x = ((column + 0.5f) * image.width / columns).toInt()
+                    .coerceIn(0, image.width - 1)
+                val offset = y * plane.rowStride + x * plane.pixelStride
+                val red = buffer.get(offset).toInt() and 0xFF
+                val green = buffer.get(offset + 1).toInt() and 0xFF
+                val blue = buffer.get(offset + 2).toInt() and 0xFF
+                signature[row * columns + column] =
+                    (red * 30 + green * 59 + blue * 11) / 100
+            }
+        }
+        return signature
+    }
+
+    private fun signatureDifference(first: IntArray, second: IntArray): Double {
+        if (first.size != second.size || first.isEmpty()) return Double.MAX_VALUE
+        var difference = 0L
+        first.indices.forEach { index -> difference += abs(first[index] - second[index]) }
+        return difference.toDouble() / first.size
+    }
+
+    private fun startOcr(image: Image, signature: IntArray, now: Long) {
+        if (ocrInFlight) return
+        ocrInFlight = true
+        lastOcrAtMs = now
+        val generation = captureGeneration
+
+        val bitmap = imageToBitmap(image)
+        val recognizer = textRecognizer ?: TextRecognition
+            .getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            .also { textRecognizer = it }
+
+        recognizer.process(InputImage.fromBitmap(bitmap, 0))
+            .addOnSuccessListener { result ->
+                if (!isCaptureRunning || generation != captureGeneration) {
+                    return@addOnSuccessListener
+                }
+                val boxes = mutableListOf<Rect>()
+                result.textBlocks.forEach { block ->
+                    block.lines.forEach { line -> line.boundingBox?.let { boxes.add(Rect(it)) } }
+                }
+                lastOcrSignature = signature
+                overlayView?.setTextRegions(
+                    boxes,
+                    bitmap.width,
+                    bitmap.height,
+                    animationMode == "fade",
+                )
+                ignoreMotionUntilMs = SystemClock.uptimeMillis() +
+                    if (animationMode == "fade") 280L else 140L
+                Log.v(TAG, "OCR found ${boxes.size} text lines")
+            }
+            .addOnFailureListener { error -> Log.w(TAG, "OCR failed", error) }
+            .addOnCompleteListener {
+                bitmap.recycle()
+                ocrInFlight = false
+            }
+    }
+
+    private fun imageToBitmap(image: Image): Bitmap {
+        val plane = image.planes[0]
+        val paddedWidth = image.width +
+            (plane.rowStride - plane.pixelStride * image.width) / plane.pixelStride
+        val padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
+        plane.buffer.rewind()
+        padded.copyPixelsFromBuffer(plane.buffer)
+        if (paddedWidth == image.width) return padded
+
+        val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
+        padded.recycle()
+        return cropped
     }
 
     private fun releaseCapture() {
+        captureGeneration++
         isCaptureRunning = false
+        ocrInFlight = false
+        lastFrameSignature = null
+        lastOcrSignature = null
+        motionActive = false
+        ignoreMotionUntilMs = 0L
+        overlayView?.clearTextRegions()
         virtualDisplay?.release()
         virtualDisplay = null
         imageReader?.close()

@@ -4,6 +4,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+dependencies {
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+}
+
 android {
     namespace = "com.desu1243.darker"
     compileSdk = flutter.compileSdkVersion

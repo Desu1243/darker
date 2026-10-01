@@ -10,18 +10,22 @@ the application underneath it.
 - explicit Android "display over other apps" permission flow;
 - live opacity changes while the overlay is active;
 - persistent foreground-service notification with a Stop action;
-- optional Text Aware mode that starts a `MediaProjection` session and receives
-  throttled screen frames;
+- optional Text Aware mode with on-device ML Kit OCR and softly feathered text
+  cut-outs;
+- continuous recognition or recognition after visible screen movement stops;
+- instant and fade transitions plus configurable margin, radius, and softness;
 - Flutter/native state synchronization through a method channel.
 
-Screen opacity is intentionally the inverse of the native black overlay alpha:
-100% means no dimming and 0% means maximum dimming. The underlying overlay
-alpha is capped at 78% in Kotlin, leaving a small margin below Android's 0.80
-maximum obscuring opacity for pass-through touches.
+Screen opacity is intentionally the inverse of the effective black overlay
+alpha: 100% means no dimming and 0% means maximum dimming. The overlay window
+stays at a constant 70% alpha while the black background pixels supply the
+variable part of the dimming. Keeping the window in one composition mode avoids
+the brightness and tone-mapping jump that some physical devices exhibit when a
+window changes from exactly transparent to non-transparent.
 
-Text recognition and transparent/partially dimmed text regions are intentionally
-reserved for the next milestone. The capture pipeline is already running and
-has a dedicated frame-processing hook in `OverlayService`.
+The movement-triggered mode compares lightweight frame signatures rather than
+intercepting global touch input. This preserves normal touch pass-through and
+avoids requiring an accessibility service.
 
 ## Run
 
