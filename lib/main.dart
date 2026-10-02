@@ -1,10 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() => runApp(const DarkerApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final preferences = await SharedPreferences.getInstance();
+  runApp(DarkerApp(preferences: preferences));
+}
 
 class DarkerApp extends StatelessWidget {
-  const DarkerApp({super.key});
+  const DarkerApp({super.key, this.preferences});
+
+  final SharedPreferences? preferences;
 
   @override
   Widget build(BuildContext context) {
@@ -26,25 +35,29 @@ class DarkerApp extends StatelessWidget {
           thumbSize: WidgetStatePropertyAll(Size.square(22)),
         ),
       ),
-      home: const DimmerPage(),
+      home: DimmerPage(preferences: preferences),
     );
   }
 }
 
 class DimmerPage extends StatefulWidget {
-  const DimmerPage({super.key});
+  const DimmerPage({super.key, this.preferences});
+
+  final SharedPreferences? preferences;
 
   @override
   State<DimmerPage> createState() => _DimmerPageState();
 }
 
-enum TextAwareUpdateMode { continuous, afterMotionStops }
-
-enum TextAwareAnimationMode { instant, fade }
-
 class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   static const _channel = MethodChannel('com.desu1243.darker/overlay');
   static const _maxNativeOverlayOpacity = 0.70;
+  static const _screenOpacityKey = 'screenOpacity';
+  static const _textOpacityKey = 'textOpacity';
+  static const _textAwareKey = 'textAware';
+  static const _textMarginKey = 'textMargin';
+  static const _cornerRadiusKey = 'cornerRadius';
+  static const _edgeSoftnessKey = 'edgeSoftness';
 
   // User-facing opacity describes how visible the underlying screen remains:
   // 100% means no dimming, while 0% means maximum safe dimming.
@@ -55,8 +68,6 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   bool _overlayRunning = false;
   bool _captureRunning = false;
   bool _busy = true;
-  TextAwareUpdateMode _updateMode = TextAwareUpdateMode.continuous;
-  TextAwareAnimationMode _animationMode = TextAwareAnimationMode.instant;
   double _textMargin = 12;
   double _cornerRadius = 10;
   double _edgeSoftness = 12;
@@ -66,7 +77,45 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _channel.setMethodCallHandler(_handleNativeCallback);
+    _restoreSettings();
     _refreshNativeState();
+  }
+
+  void _restoreSettings() {
+    final preferences = widget.preferences;
+    if (preferences == null) return;
+
+    _screenOpacity = (preferences.getDouble(_screenOpacityKey) ?? 0.50).clamp(
+      0.0,
+      1.0,
+    );
+    _textOpacity = (preferences.getDouble(_textOpacityKey) ?? 0.75).clamp(
+      _screenOpacity,
+      1.0,
+    );
+    _textAware = preferences.getBool(_textAwareKey) ?? false;
+    _textMargin = (preferences.getDouble(_textMarginKey) ?? 12).clamp(
+      0.0,
+      32.0,
+    );
+    _cornerRadius = (preferences.getDouble(_cornerRadiusKey) ?? 10).clamp(
+      0.0,
+      32.0,
+    );
+    _edgeSoftness = (preferences.getDouble(_edgeSoftnessKey) ?? 12).clamp(
+      0.0,
+      32.0,
+    );
+  }
+
+  void _saveDouble(String key, double value) {
+    final preferences = widget.preferences;
+    if (preferences != null) unawaited(preferences.setDouble(key, value));
+  }
+
+  void _saveBool(String key, bool value) {
+    final preferences = widget.preferences;
+    if (preferences != null) unawaited(preferences.setBool(key, value));
   }
 
   @override
@@ -110,7 +159,9 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
         _hasOverlayPermission = results[0] as bool? ?? false;
         _overlayRunning = state?['running'] as bool? ?? false;
         _captureRunning = state?['captureRunning'] as bool? ?? false;
-        _textAware = state?['textAware'] as bool? ?? _textAware;
+        if (_overlayRunning) {
+          _textAware = state?['textAware'] as bool? ?? _textAware;
+        }
         final nativeOpacity = state?['opacity'] as num?;
         final nativeTextDimAmount = state?['textDimAmount'] as num?;
         if (_overlayRunning && nativeOpacity != null) {
@@ -170,8 +221,6 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
           'opacity': _nativeOpacityFromScreen(_screenOpacity),
           'textDimAmount': _nativeOpacityFromScreen(_textOpacity),
           'textAware': _textAware,
-          'updateMode': _updateMode.name,
-          'animationMode': _animationMode.name,
           'textMarginDp': _textMargin,
           'cornerRadiusDp': _cornerRadius,
           'featherDp': _edgeSoftness,
@@ -197,6 +246,8 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       _screenOpacity = value;
       if (_textOpacity < value) _textOpacity = value;
     });
+    _saveDouble(_screenOpacityKey, _screenOpacity);
+    _saveDouble(_textOpacityKey, _textOpacity);
     if (!_overlayRunning) return;
     try {
       await _channel.invokeMethod<void>('updateOpacity', {
@@ -210,6 +261,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   Future<void> _updateTextOpacity(double value) async {
     final safeValue = value.clamp(_screenOpacity, 1.0);
     setState(() => _textOpacity = safeValue);
+    _saveDouble(_textOpacityKey, safeValue);
     if (!_overlayRunning) return;
     try {
       await _channel.invokeMethod<void>('updateTextOpacity', {
@@ -218,6 +270,26 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
     } on PlatformException catch (error) {
       _showMessage(error.message ?? 'Could not update the text opacity.');
     }
+  }
+
+  void _updateTextAware(bool value) {
+    setState(() => _textAware = value);
+    _saveBool(_textAwareKey, value);
+  }
+
+  void _updateTextMargin(double value) {
+    setState(() => _textMargin = value);
+    _saveDouble(_textMarginKey, value);
+  }
+
+  void _updateCornerRadius(double value) {
+    setState(() => _cornerRadius = value);
+    _saveDouble(_cornerRadiusKey, value);
+  }
+
+  void _updateEdgeSoftness(double value) {
+    setState(() => _edgeSoftness = value);
+    _saveDouble(_edgeSoftnessKey, value);
   }
 
   double _nativeOpacityFromScreen(double screenOpacity) {
@@ -365,7 +437,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                     value: _textAware,
                     onChanged: _overlayRunning || _busy
                         ? null
-                        : (value) => setState(() => _textAware = value),
+                        : _updateTextAware,
                   ),
                   if (_textAware) ...[
                     const Divider(height: 32),
@@ -400,71 +472,6 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                       style: TextStyle(color: Color(0xFF858894), height: 1.35),
                     ),
                     const SizedBox(height: 22),
-                    const Text(
-                      'Detection frequency',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: SegmentedButton<TextAwareUpdateMode>(
-                        segments: const [
-                          ButtonSegment(
-                            value: TextAwareUpdateMode.continuous,
-                            label: Text('Continuous'),
-                            icon: Icon(Icons.sync_rounded),
-                          ),
-                          ButtonSegment(
-                            value: TextAwareUpdateMode.afterMotionStops,
-                            label: Text('After movement'),
-                            icon: Icon(Icons.touch_app_outlined),
-                          ),
-                        ],
-                        selected: {_updateMode},
-                        onSelectionChanged: _overlayRunning || _busy
-                            ? null
-                            : (selection) =>
-                                  setState(() => _updateMode = selection.first),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _updateMode == TextAwareUpdateMode.continuous
-                          ? 'OCR updates as quickly as the device can process frames.'
-                          : 'OCR runs about 300 ms after visible movement stops.',
-                      style: const TextStyle(
-                        color: Color(0xFF858894),
-                        height: 1.35,
-                      ),
-                    ),
-                    const SizedBox(height: 22),
-                    const Text(
-                      'Transition',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: SegmentedButton<TextAwareAnimationMode>(
-                        segments: const [
-                          ButtonSegment(
-                            value: TextAwareAnimationMode.instant,
-                            label: Text('Instant'),
-                          ),
-                          ButtonSegment(
-                            value: TextAwareAnimationMode.fade,
-                            label: Text('Fade'),
-                          ),
-                        ],
-                        selected: {_animationMode},
-                        onSelectionChanged: _overlayRunning || _busy
-                            ? null
-                            : (selection) => setState(
-                                () => _animationMode = selection.first,
-                              ),
-                      ),
-                    ),
-                    const SizedBox(height: 22),
                     _StyleSlider(
                       label: 'Text margin',
                       value: _textMargin,
@@ -472,7 +479,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                       max: 32,
                       suffix: 'dp',
                       enabled: !_overlayRunning && !_busy,
-                      onChanged: (value) => setState(() => _textMargin = value),
+                      onChanged: _updateTextMargin,
                     ),
                     _StyleSlider(
                       label: 'Corner radius',
@@ -481,8 +488,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                       max: 32,
                       suffix: 'dp',
                       enabled: !_overlayRunning && !_busy,
-                      onChanged: (value) =>
-                          setState(() => _cornerRadius = value),
+                      onChanged: _updateCornerRadius,
                     ),
                     _StyleSlider(
                       label: 'Edge softness',
@@ -491,8 +497,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                       max: 32,
                       suffix: 'dp',
                       enabled: !_overlayRunning && !_busy,
-                      onChanged: (value) =>
-                          setState(() => _edgeSoftness = value),
+                      onChanged: _updateEdgeSoftness,
                     ),
                   ],
                 ],

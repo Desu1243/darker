@@ -22,8 +22,6 @@ class MainActivity : FlutterActivity() {
     private var methodChannel: MethodChannel? = null
     private var pendingOpacity = 0.35f
     private var pendingTextDimAmount = 0.175f
-    private var pendingUpdateMode = "continuous"
-    private var pendingAnimationMode = "instant"
     private var pendingTextMarginDp = 12f
     private var pendingCornerRadiusDp = 10f
     private var pendingFeatherDp = 12f
@@ -76,10 +74,6 @@ class MainActivity : FlutterActivity() {
                             ((call.argument<Double>("textDimAmount") ?: 0.175).toFloat())
                                 .coerceIn(0f, pendingOpacity)
                         val textAware = call.argument<Boolean>("textAware") ?: false
-                        pendingUpdateMode =
-                            call.argument<String>("updateMode") ?: "continuous"
-                        pendingAnimationMode =
-                            call.argument<String>("animationMode") ?: "instant"
                         pendingTextMarginDp =
                             (call.argument<Double>("textMarginDp") ?: 12.0).toFloat()
                         pendingCornerRadiusDp =
@@ -157,8 +151,6 @@ class MainActivity : FlutterActivity() {
             .putExtra(OverlayService.EXTRA_OPACITY, opacity)
             .putExtra(OverlayService.EXTRA_TEXT_DIM_AMOUNT, pendingTextDimAmount)
             .putExtra(OverlayService.EXTRA_TEXT_AWARE, textAware)
-            .putExtra(OverlayService.EXTRA_UPDATE_MODE, pendingUpdateMode)
-            .putExtra(OverlayService.EXTRA_ANIMATION_MODE, pendingAnimationMode)
             .putExtra(OverlayService.EXTRA_TEXT_MARGIN_DP, pendingTextMarginDp)
             .putExtra(OverlayService.EXTRA_CORNER_RADIUS_DP, pendingCornerRadiusDp)
             .putExtra(OverlayService.EXTRA_FEATHER_DP, pendingFeatherDp)

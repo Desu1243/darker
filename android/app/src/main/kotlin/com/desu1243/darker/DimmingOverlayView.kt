@@ -23,10 +23,15 @@ class DimmingOverlayView(context: Context) : View(context) {
     private val maskCompositePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
     }
+    private val oldMaskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val newMaskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
+    }
 
     private var dimAmount = 0f
     private var textDimAmount = 0.175f
     private var textRegions: List<RectF> = emptyList()
+    private var previousTextRegions: List<RectF> = emptyList()
     private var sourceWidth = 1
     private var sourceHeight = 1
     private var marginPx = 12f * density
@@ -34,6 +39,8 @@ class DimmingOverlayView(context: Context) : View(context) {
     private var featherPx = 12f * density
     private var revealProgress = 0f
     private var animator: ValueAnimator? = null
+    private var transitionProgress = 1f
+    private var transitionAnimator: ValueAnimator? = null
 
     init {
         setLayerType(LAYER_TYPE_SOFTWARE, null)
@@ -65,12 +72,41 @@ class DimmingOverlayView(context: Context) : View(context) {
     ) {
         sourceWidth = imageWidth.coerceAtLeast(1)
         sourceHeight = imageHeight.coerceAtLeast(1)
-        textRegions = regions.map { RectF(it) }
-        animateReveal(
-            if (animated) revealProgress else 1f,
-            1f,
-            if (animated) 180L else 0L,
-        )
+        val newRegions = regions.map { RectF(it) }
+
+        transitionAnimator?.cancel()
+        if (!animated) {
+            previousTextRegions = emptyList()
+            textRegions = newRegions
+            transitionProgress = 1f
+            animateReveal(1f, 1f, 0L)
+            return
+        }
+
+        if (revealProgress <= 0.02f || textRegions.isEmpty()) {
+            previousTextRegions = emptyList()
+            textRegions = newRegions
+            transitionProgress = 1f
+            revealProgress = 0f
+        } else {
+            // Cross-fade the geometric difference. Both masks are rendered as
+            // opaque unions and then added with complementary alpha, so their
+            // common pixels remain fully visible while only entering and
+            // leaving pixels fade.
+            previousTextRegions = textRegions
+            textRegions = newRegions
+            transitionProgress = 0f
+            transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 220L
+                interpolator = DecelerateInterpolator()
+                addUpdateListener {
+                    transitionProgress = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+        animateReveal(revealProgress, 1f, 180L)
     }
 
     fun hideTextRegions(animated: Boolean) {
@@ -86,8 +122,11 @@ class DimmingOverlayView(context: Context) : View(context) {
 
     fun clearTextRegions() {
         animator?.cancel()
+        transitionAnimator?.cancel()
         textRegions = emptyList()
+        previousTextRegions = emptyList()
         revealProgress = 0f
+        transitionProgress = 1f
         invalidate()
     }
 
@@ -101,7 +140,10 @@ class DimmingOverlayView(context: Context) : View(context) {
         val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), dimPaint)
 
-        if (revealProgress > 0f && textRegions.isNotEmpty()) {
+        if (
+            revealProgress > 0f &&
+            (textRegions.isNotEmpty() || previousTextRegions.isNotEmpty())
+        ) {
             val scaleX = width.toFloat() / sourceWidth
             // Preserve captured display coordinates instead of vertically
             // stretching content when navigation bars reduce overlay height.
@@ -132,20 +174,84 @@ class DimmingOverlayView(context: Context) : View(context) {
                 null
             }
 
-            textRegions.forEach { source ->
-                val region = RectF(
-                    source.left * scaleX - scaledMarginX,
-                    source.top * scaleY - scaledMarginY,
-                    source.right * scaleX + scaledMarginX,
-                    source.bottom * scaleY + scaledMarginY,
+            if (previousTextRegions.isNotEmpty() && transitionProgress < 1f) {
+                oldMaskPaint.alpha = (255f * (1f - transitionProgress))
+                    .toInt()
+                    .coerceIn(0, 255)
+                val oldLayer = canvas.saveLayer(
+                    0f,
+                    0f,
+                    width.toFloat(),
+                    height.toFloat(),
+                    oldMaskPaint,
                 )
-                val safeRadius = max(0f, radius)
-                canvas.drawRoundRect(region, safeRadius, safeRadius, cutoutPaint)
+                drawRegions(
+                    canvas,
+                    previousTextRegions,
+                    scaleX,
+                    scaleY,
+                    scaledMarginX,
+                    scaledMarginY,
+                    radius,
+                )
+                canvas.restoreToCount(oldLayer)
+
+                newMaskPaint.alpha = (255f * transitionProgress)
+                    .toInt()
+                    .coerceIn(0, 255)
+                val newLayer = canvas.saveLayer(
+                    0f,
+                    0f,
+                    width.toFloat(),
+                    height.toFloat(),
+                    newMaskPaint,
+                )
+                drawRegions(
+                    canvas,
+                    textRegions,
+                    scaleX,
+                    scaleY,
+                    scaledMarginX,
+                    scaledMarginY,
+                    radius,
+                )
+                canvas.restoreToCount(newLayer)
+            } else {
+                drawRegions(
+                    canvas,
+                    textRegions,
+                    scaleX,
+                    scaleY,
+                    scaledMarginX,
+                    scaledMarginY,
+                    radius,
+                )
             }
             cutoutPaint.maskFilter = null
             canvas.restoreToCount(maskLayer)
         }
         canvas.restoreToCount(layer)
+    }
+
+    private fun drawRegions(
+        canvas: Canvas,
+        regions: List<RectF>,
+        scaleX: Float,
+        scaleY: Float,
+        scaledMarginX: Float,
+        scaledMarginY: Float,
+        radius: Float,
+    ) {
+        val safeRadius = max(0f, radius)
+        regions.forEach { source ->
+            val region = RectF(
+                source.left * scaleX - scaledMarginX,
+                source.top * scaleY - scaledMarginY,
+                source.right * scaleX + scaledMarginX,
+                source.bottom * scaleY + scaledMarginY,
+            )
+            canvas.drawRoundRect(region, safeRadius, safeRadius, cutoutPaint)
+        }
     }
 
     private fun animateReveal(from: Float, to: Float, durationMs: Long) {

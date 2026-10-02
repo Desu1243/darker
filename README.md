@@ -13,8 +13,9 @@ the application underneath it.
 - optional Text Aware mode with on-device ML Kit OCR and softly feathered text
   cut-outs;
 - independent text-area opacity, adjustable live while the overlay is active;
-- continuous recognition or recognition after visible screen movement stops;
-- instant and fade transitions plus configurable margin, radius, and softness;
+- continuous text recognition with a smooth fade transition;
+- configurable text margin, corner radius, and edge softness;
+- persistent storage for every user-adjustable setting;
 - Flutter/native state synchronization through a method channel.
 
 Screen opacity is intentionally the inverse of the effective black overlay
@@ -23,10 +24,6 @@ stays at a constant 70% alpha while the black background pixels supply the
 variable part of the dimming. Keeping the window in one composition mode avoids
 the brightness and tone-mapping jump that some physical devices exhibit when a
 window changes from exactly transparent to non-transparent.
-
-The movement-triggered mode compares lightweight frame signatures rather than
-intercepting global touch input. This preserves normal touch pass-through and
-avoids requiring an accessibility service.
 
 ## Run
 
