@@ -1,5 +1,6 @@
 import 'package:darker/main.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -31,14 +32,31 @@ void main() {
     await tester.pump();
 
     expect(find.text('Darker'), findsOneWidget);
-    expect(find.text('Opacity'), findsOneWidget);
-    expect(find.text('Text Aware'), findsOneWidget);
+    expect(find.text('Color calibration'), findsOneWidget);
+    expect(find.text('Large text (3:1)'), findsOneWidget);
+    expect(find.text('Small text (4.5:1)'), findsOneWidget);
     expect(find.byType(DimmerPage), findsOneWidget);
 
+    await tester.scrollUntilVisible(
+      find.text('Opacity'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Opacity'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Text Aware'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('Text Aware'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(preferences.getBool('textAware'), isTrue);
+    await tester.scrollUntilVisible(
+      find.text('Text opacity'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('Text opacity'), findsOneWidget);
     expect(find.text('75%'), findsOneWidget);
     expect(find.text('Detection frequency'), findsNothing);
@@ -77,10 +95,35 @@ void main() {
     await tester.pumpWidget(DarkerApp(preferences: preferences));
     await tester.pump();
 
+    await tester.scrollUntilVisible(
+      find.text('63%'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('63%'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('82%'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('82%'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('19 dp'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('19 dp'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('7 dp'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('7 dp'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('24 dp'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('24 dp'), findsOneWidget);
     expect(find.text('Detection frequency'), findsNothing);
     expect(find.text('Transition'), findsNothing);

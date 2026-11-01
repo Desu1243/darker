@@ -362,6 +362,8 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
               textAware: _textAware,
             ),
             const SizedBox(height: 18),
+            const _CalibrationSamples(),
+            const SizedBox(height: 14),
             _Panel(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -563,6 +565,186 @@ class _Panel extends StatelessWidget {
       child: Padding(padding: const EdgeInsets.all(18), child: child),
     );
   }
+}
+
+class _ColorCalibrationCard extends StatelessWidget {
+  const _ColorCalibrationCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: const BorderSide(color: Color(0xFF252832)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Color calibration',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(13),
+              child: const AspectRatio(
+                aspectRatio: 16 / 7,
+                child: CustomPaint(painter: _ColorBarsPainter()),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CalibrationSamples extends StatelessWidget {
+  const _CalibrationSamples();
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                width: constraints.maxWidth * 0.9,
+                child: const _ColorCalibrationCard(),
+              ),
+              const SizedBox(width: 14),
+              SizedBox(
+                width: constraints.maxWidth * 0.9,
+                child: const _ContrastSample(
+                  label: 'Large text (3:1)',
+                  backgroundColor: Color(0xFF808080),
+                  foregroundColor: Color(0xFF414141),
+                  fontSize: 18,
+                  text: 'The contrast between this text and its background is 3:1, meeting the minimum recommended contrast ratio for large text. Make sure the text remains readable even when filter is on.',
+                ),
+              ),
+              const SizedBox(width: 14),
+              SizedBox(
+                width: constraints.maxWidth * 0.9,
+                child: const _ContrastSample(
+                  label: 'Small text (4.5:1)',
+                  backgroundColor: Color(0xFF808080),
+                  foregroundColor: Color(0xFF181818),
+                  fontSize: 12,
+                  text: 'The contrast between this text and its background is 4.5:1, meeting the minimum recommended contrast ratio for small text. Make sure the text remains readable even when filter is on.',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ContrastSample extends StatelessWidget {
+  const _ContrastSample({
+    required this.label,
+    required this.backgroundColor,
+    required this.foregroundColor,
+    required this.fontSize,
+    required this.text,
+  });
+
+  final String label;
+  final Color backgroundColor;
+  final Color foregroundColor;
+  final double fontSize;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: foregroundColor.withValues(alpha: 0.24)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: foregroundColor.withValues(alpha: 0.82),
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            text,
+            style: TextStyle(
+              color: foregroundColor,
+              fontSize: fontSize,
+              fontWeight: FontWeight.w600,
+              height: 1.32,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColorBarsPainter extends CustomPainter {
+  const _ColorBarsPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const bars = [
+      Color(0xFFD9D9D9),
+      Color(0xFFD4D65A),
+      Color(0xFF55D4D2),
+      Color(0xFF59CC67),
+      Color(0xFFD05DCA),
+      Color(0xFFD35454),
+      Color(0xFF545ECE),
+    ];
+    final topHeight = size.height * 0.72;
+    final barWidth = size.width / bars.length;
+    final paint = Paint();
+
+    for (var index = 0; index < bars.length; index++) {
+      paint.color = bars[index];
+      canvas.drawRect(
+        Rect.fromLTWH(index * barWidth, 0, barWidth + 1, topHeight),
+        paint,
+      );
+    }
+
+    const lowerBars = [
+      Color(0xFF2635B7),
+      Color(0xFFFFFFFF),
+      Color(0xFF74239F),
+      Color(0xFF161616),
+      Color(0xFF0B7E81),
+      Color(0xFF121212),
+      Color(0xFFD4D4D4),
+    ];
+    for (var index = 0; index < lowerBars.length; index++) {
+      paint.color = lowerBars[index];
+      canvas.drawRect(
+        Rect.fromLTWH(index * barWidth, topHeight, barWidth + 1, size.height),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ColorBarsPainter oldDelegate) => false;
 }
 
 class _StyleSlider extends StatelessWidget {
