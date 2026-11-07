@@ -40,22 +40,47 @@ void main() {
     await tester.scrollUntilVisible(
       find.text('Opacity'),
       300,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('home')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     expect(find.text('Opacity'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('Text Aware'),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.tap(find.text('Text Aware'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Enable Text Aware'));
+    await tester.pumpAndSettle();
+    expect(preferences.getBool('textAware'), isFalse);
+    await tester.tap(find.text('Enable Text Aware'));
+    await tester.pumpAndSettle();
     expect(preferences.getBool('textAware'), isTrue);
+    await tester.scrollUntilVisible(
+      find.text('Keep overlay active after closing the app'),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('settings')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Keep overlay active after closing the app'));
+    await tester.pumpAndSettle();
+    expect(preferences.getBool('keepOverlayAfterClosing'), isTrue);
+    await tester.tap(find.text('Dimmer'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('Text opacity'),
       300,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('home')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     expect(find.text('Text opacity'), findsOneWidget);
     expect(find.text('75%'), findsOneWidget);
@@ -98,31 +123,74 @@ void main() {
     await tester.scrollUntilVisible(
       find.text('63%'),
       300,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('home')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     expect(find.text('63%'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('82%'),
       300,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('home')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     expect(find.text('82%'), findsOneWidget);
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Text margin'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('Text appearance'),
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('settings')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Text appearance'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Text appearance'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('19 dp'),
       300,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('settings')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     expect(find.text('19 dp'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('7 dp'),
       300,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('settings')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     expect(find.text('7 dp'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('24 dp'),
       300,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('settings')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     expect(find.text('24 dp'), findsOneWidget);
     expect(find.text('Detection frequency'), findsNothing);

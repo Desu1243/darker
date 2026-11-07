@@ -63,7 +63,10 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   // 100% means no dimming, while 0% means maximum safe dimming.
   double _screenOpacity = 0.50;
   double _textOpacity = 0.75;
-  bool _textAware = false;
+  bool _textAware = true;
+  bool _keepOverlayAfterClosing = false;
+  final _pageController = PageController();
+  int _selectedPage = 0;
   bool _hasOverlayPermission = false;
   bool _overlayRunning = false;
   bool _captureRunning = false;
@@ -93,7 +96,9 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       _screenOpacity,
       1.0,
     );
-    _textAware = preferences.getBool(_textAwareKey) ?? false;
+    _textAware = preferences.getBool(_textAwareKey) ?? true;
+    _keepOverlayAfterClosing =
+        preferences.getBool('keepOverlayAfterClosing') ?? false;
     _textMargin = (preferences.getDouble(_textMarginKey) ?? 12).clamp(
       0.0,
       32.0,
@@ -122,6 +127,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _channel.setMethodCallHandler(null);
+    _pageController.dispose();
     super.dispose();
   }
 
@@ -149,6 +155,9 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
 
   Future<void> _refreshNativeState() async {
     try {
+      await _channel.invokeMethod<void>('setKeepOverlayAfterClosing', {
+        'enabled': _keepOverlayAfterClosing,
+      });
       final results = await Future.wait<Object?>([
         _channel.invokeMethod<bool>('checkOverlayPermission'),
         _channel.invokeMethod<Map<Object?, Object?>>('getOverlayState'),
@@ -321,159 +330,284 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
     );
     return Scaffold(
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 24, 22, 28),
+        child: PageView(
+          controller: _pageController,
+          onPageChanged: (index) => setState(() => _selectedPage = index),
           children: [
-            Row(
+            ListView(
+              key: const PageStorageKey('home'),
+              padding: const EdgeInsets.fromLTRB(22, 24, 22, 28),
               children: [
-                Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary
-                        .withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(15),
-                  ),
-                  child: const Icon(Icons.dark_mode_rounded),
-                ),
-                const SizedBox(width: 14),
-                const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                Row(
                   children: [
-                    Text(
-                      'Darker',
-                      style: TextStyle(
-                        fontSize: 27,
-                        fontWeight: FontWeight.w700,
+                    Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primary
+                            .withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(15),
                       ),
+                      child: const Icon(Icons.dark_mode_rounded),
                     ),
-                    Text(
-                      'Comfortable reading after dark',
-                      style: TextStyle(color: Color(0xFF9A9DA8)),
+                    const SizedBox(width: 14),
+                    const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Darker',
+                          style: TextStyle(
+                            fontSize: 27,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          'Comfortable reading after dark',
+                          style: TextStyle(color: Color(0xFF9A9DA8)),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 34),
-            _StatusCard(
-              running: _overlayRunning,
-              captureRunning: _captureRunning,
-              textAware: _textAware,
-            ),
-            const SizedBox(height: 18),
-            const _CalibrationSamples(),
-            const SizedBox(height: 14),
-            _Panel(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                const SizedBox(height: 34),
+                _StatusCard(
+                  running: _overlayRunning,
+                  captureRunning: _captureRunning,
+                  textAware: _textAware,
+                ),
+                const SizedBox(height: 18),
+                const _CalibrationSamples(),
+                const SizedBox(height: 14),
+                _Panel(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Opacity',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Opacity',
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            '$percentage%',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
                       ),
-                      Text(
-                        '$percentage%',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w700,
+                      const SizedBox(height: 8),
+                      Slider(
+                        value: _screenOpacity,
+                        min: 0,
+                        max: 1,
+                        divisions: 100,
+                        label: '$percentage%',
+                        onChanged: _busy ? null : _updateOpacity,
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Icon(Icons.brightness_low_sharp),
+                            Icon(Icons.brightness_high_sharp),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Slider(
-                    value: _screenOpacity,
-                    min: 0,
-                    max: 1,
-                    divisions: 100,
-                    label: '$percentage%',
-                    onChanged: _busy ? null : _updateOpacity,
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                ),
+                if (_textAware) ...[
+                  const SizedBox(height: 14),
+                  _Panel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Maximum dimming',
-                          style: TextStyle(color: Color(0xFF858894)),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Text opacity',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              '$textPercentage%',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.primary,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
                         ),
-                        Text(
-                          'No dimming',
-                          style: TextStyle(color: Color(0xFF858894)),
+                        const SizedBox(height: 8),
+                        Slider(
+                          value: _textOpacity.clamp(_screenOpacity, 1.0),
+                          min: _screenOpacity,
+                          max: 1,
+                          divisions: textOpacityDivisions,
+                          label: '$textPercentage%',
+                          onChanged: _busy || _screenOpacity >= 1
+                              ? null
+                              : _updateTextOpacity,
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 4),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Icon(
+                                Icons.text_fields_rounded,
+                                color: Color(0xFF61636C),
+                                semanticLabel: 'Dim text',
+                              ),
+                              Icon(
+                                Icons.text_fields_rounded,
+                                color: Color(0xFFE4E5ED),
+                                semanticLabel: 'Bright text',
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
                   ),
                 ],
+                if (!_hasOverlayPermission) ...[
+                  const SizedBox(height: 14),
+                  _PermissionCard(onPressed: _requestOverlayPermission),
+                ],
+              ],
+            ),
+            _buildSettings(),
+          ],
+        ),
+      ),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SafeArea(
+            top: false,
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 12, 22, 10),
+              child: FilledButton.icon(
+                onPressed: _busy ? null : _toggleOverlay,
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                ),
+                icon: _busy
+                    ? const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        _overlayRunning
+                            ? Icons.stop_rounded
+                            : Icons.visibility_rounded,
+                      ),
+                label: Text(
+                  _overlayRunning ? 'Stop overlay' : 'Start overlay',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 14),
-            _Panel(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text(
-                      'Text Aware',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    subtitle: const Padding(
-                      padding: EdgeInsets.only(top: 5),
-                      child: Text(
-                        'Detect text on screen and keep its surroundings clear.',
-                      ),
-                    ),
-                    value: _textAware,
-                    onChanged: _overlayRunning || _busy
-                        ? null
-                        : _updateTextAware,
+          ),
+          NavigationBar(
+            selectedIndex: _selectedPage,
+            onDestinationSelected: (index) => _pageController.animateToPage(
+              index,
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeOut,
+            ),
+            destinations: const [
+              NavigationDestination(
+                icon: Icon(Icons.dark_mode_outlined),
+                selectedIcon: Icon(Icons.dark_mode),
+                label: 'Dimmer',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.settings_outlined),
+                selectedIcon: Icon(Icons.settings),
+                label: 'Settings',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _updateKeepOverlayAfterClosing(bool value) async {
+    try {
+      await _channel.invokeMethod<void>('setKeepOverlayAfterClosing', {
+        'enabled': value,
+      });
+      if (!mounted) return;
+      setState(() => _keepOverlayAfterClosing = value);
+      _saveBool('keepOverlayAfterClosing', value);
+    } on PlatformException catch (error) {
+      _showMessage(error.message ?? 'Could not update overlay behavior.');
+    }
+  }
+
+  Widget _buildSettings() {
+    return ListView(
+      key: const PageStorageKey('settings'),
+      padding: const EdgeInsets.fromLTRB(22, 24, 22, 28),
+      children: [
+        const Text(
+          'Settings',
+          style: TextStyle(fontSize: 27, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 24),
+        _Panel(
+          child: Column(
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Enable Text Aware',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Padding(
+                  padding: EdgeInsets.only(top: 5),
+                  child: Text(
+                    'Detect text on screen and keep its surroundings clear.',
                   ),
-                  if (_textAware) ...[
-                    const Divider(height: 32),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Text opacity',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        Text(
-                          '$textPercentage%',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      value: _textOpacity.clamp(_screenOpacity, 1.0),
-                      min: _screenOpacity,
-                      max: 1,
-                      divisions: textOpacityDivisions,
-                      label: '$textPercentage%',
-                      onChanged: _busy || _screenOpacity >= 1
-                          ? null
-                          : _updateTextOpacity,
-                    ),
-                    const Text(
-                      'Controls brightness inside detected text areas. It cannot be darker than the rest of the screen.',
-                      style: TextStyle(color: Color(0xFF858894), height: 1.35),
-                    ),
-                    const SizedBox(height: 22),
+                ),
+                value: _textAware,
+                onChanged: _overlayRunning || _busy ? null : _updateTextAware,
+              ),
+
+              if (_textAware) ...[
+                const SizedBox(height: 14),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(top: 8),
+                  shape: const Border(),
+                  collapsedShape: const Border(),
+                  title: const Text(
+                    'Text appearance',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  children: [
                     _StyleSlider(
                       label: 'Text margin',
                       value: _textMargin,
@@ -502,50 +636,24 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                       onChanged: _updateEdgeSoftness,
                     ),
                   ],
-                ],
-              ),
-            ),
-            if (!_hasOverlayPermission) ...[
-              const SizedBox(height: 14),
-              _PermissionCard(onPressed: _requestOverlayPermission),
+                ),
+              ],
             ],
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: _busy ? null : _toggleOverlay,
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(56),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
-                ),
-              ),
-              icon: _busy
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(
-                      _overlayRunning
-                          ? Icons.stop_rounded
-                          : Icons.visibility_rounded,
-                    ),
-              label: Text(
-                _overlayRunning ? 'Stop overlay' : 'Start overlay',
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-            const Text(
-              'The overlay does not intercept touch. At 0% screen opacity, '
-              'maximum dimming is capped at 70% for comfortable reading.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF858894), height: 1.4),
-            ),
-          ],
+          ),
         ),
-      ),
+        const SizedBox(height: 14),
+        _Panel(
+          child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Keep overlay active after closing the app'),
+            subtitle: const Text(
+              'Keep dimming when Darker is removed from recent apps.',
+            ),
+            value: _keepOverlayAfterClosing,
+            onChanged: _busy ? null : _updateKeepOverlayAfterClosing,
+          ),
+        ),
+      ],
     );
   }
 }

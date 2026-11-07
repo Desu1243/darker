@@ -39,6 +39,14 @@ class MainActivity : FlutterActivity() {
         ).also { channel ->
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "setKeepOverlayAfterClosing" -> {
+                        getSharedPreferences(OverlayService.SETTINGS_NAME, MODE_PRIVATE)
+                            .edit()
+                            .putBoolean(OverlayService.KEEP_AFTER_CLOSE,
+                                call.argument<Boolean>("enabled") ?: false)
+                            .apply()
+                        result.success(null)
+                    }
                     "checkOverlayPermission" -> result.success(Settings.canDrawOverlays(this))
                     "requestOverlayPermission" -> {
                         startActivity(

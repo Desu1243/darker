@@ -49,6 +49,8 @@ class OverlayService : Service() {
         const val EXTRA_TEXT_MARGIN_DP = "textMarginDp"
         const val EXTRA_CORNER_RADIUS_DP = "cornerRadiusDp"
         const val EXTRA_FEATHER_DP = "featherDp"
+        const val SETTINGS_NAME = "overlay_settings"
+        const val KEEP_AFTER_CLOSE = "keepOverlayAfterClosing"
 
         // Keep the overlay window slightly below Android's 0.80 maximum
         // obscuring opacity so touches can pass to applications underneath.
@@ -130,6 +132,14 @@ class OverlayService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (!getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE)
+                .getBoolean(KEEP_AFTER_CLOSE, false)) {
+            stopEverything()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onDestroy() {
         releaseCapture()
