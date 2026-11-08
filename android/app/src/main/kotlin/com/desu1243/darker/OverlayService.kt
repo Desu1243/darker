@@ -119,6 +119,7 @@ class OverlayService : Service() {
             ACTION_UPDATE_REFRESH_INTERVAL -> {
                 refreshIntervalMs = intent.getLongExtra(EXTRA_REFRESH_INTERVAL_MS, 400L)
                     .coerceIn(50L, 500L)
+                overlayView?.setRefreshInterval(refreshIntervalMs)
                 schedulePendingFrameDrain()
             }
             ACTION_START, null -> {
@@ -171,6 +172,7 @@ class OverlayService : Service() {
                 setDimAmount(currentOpacity)
                 setTextDimAmount(currentTextDimAmount)
                 setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
+                setRefreshInterval(refreshIntervalMs)
             }
             overlayParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -201,6 +203,7 @@ class OverlayService : Service() {
             updateOpacity(currentOpacity)
             overlayView?.setTextDimAmount(currentTextDimAmount)
             overlayView?.setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
+            overlayView?.setRefreshInterval(refreshIntervalMs)
         }
         isRunning = true
     }

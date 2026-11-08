@@ -42,6 +42,7 @@ class DimmingOverlayView(context: Context) : View(context) {
     private var animator: ValueAnimator? = null
     private var transitionProgress = 1f
     private var transitionAnimator: ValueAnimator? = null
+    private var fadeDurationMs = 200L
 
     init {
         setLayerType(LAYER_TYPE_SOFTWARE, null)
@@ -56,6 +57,10 @@ class DimmingOverlayView(context: Context) : View(context) {
     fun setTextDimAmount(amount: Float) {
         textDimAmount = amount.coerceIn(0f, dimAmount)
         invalidate()
+    }
+
+    fun setRefreshInterval(intervalMs: Long) {
+        fadeDurationMs = intervalMs.coerceIn(50L, 500L) / 2L
     }
 
     fun setTextStyle(marginDp: Float, cornerRadiusDp: Float, featherDp: Float) {
@@ -102,7 +107,7 @@ class DimmingOverlayView(context: Context) : View(context) {
             textRegions = newRegions
             transitionProgress = 0f
             transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 220L
+                duration = fadeDurationMs
                 interpolator = DecelerateInterpolator()
                 addUpdateListener {
                     transitionProgress = it.animatedValue as Float
@@ -111,13 +116,13 @@ class DimmingOverlayView(context: Context) : View(context) {
                 start()
             }
         }
-        animateReveal(revealProgress, 1f, 180L)
+        animateReveal(revealProgress, 1f, fadeDurationMs)
     }
 
     fun hideTextRegions(animated: Boolean) {
         if (textRegions.isEmpty()) return
         if (animated) {
-            animateReveal(revealProgress, 0f, 120L)
+            animateReveal(revealProgress, 0f, fadeDurationMs)
         } else {
             animator?.cancel()
             revealTarget = 0f
