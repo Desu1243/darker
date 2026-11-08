@@ -58,6 +58,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   static const _textMarginKey = 'textMargin';
   static const _cornerRadiusKey = 'cornerRadius';
   static const _edgeSoftnessKey = 'edgeSoftness';
+  static const _refreshIntervalKey = 'refreshIntervalMs';
 
   // User-facing opacity describes how visible the underlying screen remains:
   // 100% means no dimming, while 0% means maximum safe dimming.
@@ -74,6 +75,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   double _textMargin = 12;
   double _cornerRadius = 10;
   double _edgeSoftness = 12;
+  double _refreshIntervalMs = 400;
 
   @override
   void initState() {
@@ -97,6 +99,8 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       1.0,
     );
     _textAware = preferences.getBool(_textAwareKey) ?? true;
+    _refreshIntervalMs = (preferences.getDouble(_refreshIntervalKey) ?? 400)
+        .clamp(50.0, 500.0);
     _keepOverlayAfterClosing =
         preferences.getBool('keepOverlayAfterClosing') ?? false;
     _textMargin = (preferences.getDouble(_textMarginKey) ?? 12).clamp(
@@ -233,6 +237,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
           'textMarginDp': _textMargin,
           'cornerRadiusDp': _cornerRadius,
           'featherDp': _edgeSoftness,
+          'refreshIntervalMs': _refreshIntervalMs.round(),
         },
       );
       final waiting = response?['awaitingCapturePermission'] as bool? ?? false;
@@ -284,6 +289,19 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   void _updateTextAware(bool value) {
     setState(() => _textAware = value);
     _saveBool(_textAwareKey, value);
+  }
+
+  Future<void> _updateRefreshInterval(double value) async {
+    setState(() => _refreshIntervalMs = value);
+    _saveDouble(_refreshIntervalKey, value);
+    if (!_overlayRunning) return;
+    try {
+      await _channel.invokeMethod<void>('updateRefreshInterval', {
+        'refreshIntervalMs': value.round(),
+      });
+    } on PlatformException catch (error) {
+      _showMessage(error.message ?? 'Could not update the refresh interval.');
+    }
   }
 
   void _updateTextMargin(double value) {
@@ -597,6 +615,20 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
               ),
 
               if (_textAware) ...[
+                const SizedBox(height: 14),
+                _StyleSlider(
+                  label: 'Refresh interval',
+                  value: _refreshIntervalMs,
+                  min: 50,
+                  max: 500,
+                  suffix: 'ms',
+                  enabled: !_busy,
+                  onChanged: _updateRefreshInterval,
+                ),
+                const Text(
+                  'Lower values respond faster but use more battery. Actual updates depend on text recognition speed.',
+                  style: TextStyle(color: Color(0xFF858894), height: 1.35),
+                ),
                 const SizedBox(height: 14),
                 ExpansionTile(
                   tilePadding: EdgeInsets.zero,

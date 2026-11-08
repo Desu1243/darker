@@ -1,6 +1,6 @@
 import 'package:darker/main.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -95,6 +95,7 @@ void main() {
       'textMargin': 19.0,
       'cornerRadius': 7.0,
       'edgeSoftness': 24.0,
+      'refreshIntervalMs': 125.0,
     });
     final preferences = await SharedPreferences.getInstance();
     const channel = MethodChannel('com.desu1243.darker/overlay');
@@ -144,6 +145,7 @@ void main() {
     expect(find.text('82%'), findsOneWidget);
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
+    expect(find.text('125 ms'), findsOneWidget);
     expect(find.text('Text margin'), findsNothing);
     await tester.scrollUntilVisible(
       find.text('Text appearance'),
@@ -196,5 +198,52 @@ void main() {
     expect(find.text('Detection frequency'), findsNothing);
     expect(find.text('Transition'), findsNothing);
     expect(find.text('Instant'), findsNothing);
+  });
+
+  testWidgets('updates and persists refresh interval while overlay is active', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    const channel = MethodChannel('com.desu1243.darker/overlay');
+    final updates = <int>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      if (call.method == 'checkOverlayPermission') return true;
+      if (call.method == 'getOverlayState') {
+        return <String, Object?>{
+          'running': true,
+          'captureRunning': true,
+          'textAware': true,
+        };
+      }
+      if (call.method == 'updateRefreshInterval') {
+        updates.add((call.arguments as Map)['refreshIntervalMs'] as int);
+      }
+      return null;
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    await tester.pumpWidget(DarkerApp(preferences: preferences));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    final slider = find.byWidgetPredicate(
+      (widget) => widget is Slider && widget.min == 50 && widget.max == 500,
+    );
+    expect(find.text('400 ms'), findsOneWidget);
+    tester.widget<Slider>(slider).onChanged!(50);
+    await tester.pumpAndSettle();
+    expect(preferences.getDouble('refreshIntervalMs'), 50);
+    expect(find.text('50 ms'), findsOneWidget);
+    tester.widget<Slider>(slider).onChanged!(500);
+    await tester.pumpAndSettle();
+    expect(preferences.getDouble('refreshIntervalMs'), 500);
+    expect(updates, [50, 500]);
   });
 }

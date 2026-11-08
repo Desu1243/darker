@@ -38,6 +38,7 @@ class DimmingOverlayView(context: Context) : View(context) {
     private var cornerRadiusPx = 10f * density
     private var featherPx = 12f * density
     private var revealProgress = 0f
+    private var revealTarget = 0f
     private var animator: ValueAnimator? = null
     private var transitionProgress = 1f
     private var transitionAnimator: ValueAnimator? = null
@@ -70,9 +71,13 @@ class DimmingOverlayView(context: Context) : View(context) {
         imageHeight: Int,
         animated: Boolean,
     ) {
+        val newRegions = regions.map { RectF(it) }
+        // Faster OCR often returns the very same mask while its fade is still
+        // running. Let that animation finish instead of restarting it.
+        if (animated && revealTarget == 1f && newRegions == textRegions &&
+            sourceWidth == imageWidth && sourceHeight == imageHeight) return
         sourceWidth = imageWidth.coerceAtLeast(1)
         sourceHeight = imageHeight.coerceAtLeast(1)
-        val newRegions = regions.map { RectF(it) }
 
         transitionAnimator?.cancel()
         if (!animated) {
@@ -115,6 +120,7 @@ class DimmingOverlayView(context: Context) : View(context) {
             animateReveal(revealProgress, 0f, 120L)
         } else {
             animator?.cancel()
+            revealTarget = 0f
             revealProgress = 0f
             invalidate()
         }
@@ -126,6 +132,7 @@ class DimmingOverlayView(context: Context) : View(context) {
         textRegions = emptyList()
         previousTextRegions = emptyList()
         revealProgress = 0f
+        revealTarget = 0f
         transitionProgress = 1f
         invalidate()
     }
@@ -256,6 +263,7 @@ class DimmingOverlayView(context: Context) : View(context) {
 
     private fun animateReveal(from: Float, to: Float, durationMs: Long) {
         animator?.cancel()
+        revealTarget = to
         if (durationMs == 0L) {
             revealProgress = to
             invalidate()

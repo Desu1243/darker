@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
     private var pendingTextMarginDp = 12f
     private var pendingCornerRadiusDp = 10f
     private var pendingFeatherDp = 12f
+    private var pendingRefreshIntervalMs = 400L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,6 +89,9 @@ class MainActivity : FlutterActivity() {
                             (call.argument<Double>("cornerRadiusDp") ?: 10.0).toFloat()
                         pendingFeatherDp =
                             (call.argument<Double>("featherDp") ?: 12.0).toFloat()
+                        pendingRefreshIntervalMs =
+                            (call.argument<Number>("refreshIntervalMs")?.toLong() ?: 400L)
+                                .coerceIn(50L, 500L)
                         if (textAware) {
                             @Suppress("DEPRECATION")
                             startActivityForResult(
@@ -99,6 +103,18 @@ class MainActivity : FlutterActivity() {
                             startOverlayService(pendingOpacity, textAware = false)
                             result.success(mapOf("started" to true))
                         }
+                    }
+                    "updateRefreshInterval" -> {
+                        if (OverlayService.isRunning) {
+                            startService(
+                                Intent(this, OverlayService::class.java)
+                                    .setAction(OverlayService.ACTION_UPDATE_REFRESH_INTERVAL)
+                                    .putExtra(OverlayService.EXTRA_REFRESH_INTERVAL_MS,
+                                        (call.argument<Number>("refreshIntervalMs")?.toLong() ?: 400L)
+                                            .coerceIn(50L, 500L))
+                            )
+                        }
+                        result.success(null)
                     }
                     "updateOpacity" -> {
                         val opacity = ((call.argument<Double>("opacity") ?: 0.35).toFloat())
@@ -162,6 +178,7 @@ class MainActivity : FlutterActivity() {
             .putExtra(OverlayService.EXTRA_TEXT_MARGIN_DP, pendingTextMarginDp)
             .putExtra(OverlayService.EXTRA_CORNER_RADIUS_DP, pendingCornerRadiusDp)
             .putExtra(OverlayService.EXTRA_FEATHER_DP, pendingFeatherDp)
+            .putExtra(OverlayService.EXTRA_REFRESH_INTERVAL_MS, pendingRefreshIntervalMs)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ContextCompat.startForegroundService(this, intent)
         } else {

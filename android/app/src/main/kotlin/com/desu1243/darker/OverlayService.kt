@@ -40,6 +40,7 @@ class OverlayService : Service() {
             "com.desu1243.darker.action.UPDATE_TEXT_OPACITY"
         const val ACTION_STOP = "com.desu1243.darker.action.STOP"
         const val ACTION_START_CAPTURE = "com.desu1243.darker.action.START_CAPTURE"
+        const val ACTION_UPDATE_REFRESH_INTERVAL = "com.desu1243.darker.action.UPDATE_REFRESH_INTERVAL"
 
         const val EXTRA_OPACITY = "opacity"
         const val EXTRA_TEXT_DIM_AMOUNT = "textDimAmount"
@@ -49,6 +50,7 @@ class OverlayService : Service() {
         const val EXTRA_TEXT_MARGIN_DP = "textMarginDp"
         const val EXTRA_CORNER_RADIUS_DP = "cornerRadiusDp"
         const val EXTRA_FEATHER_DP = "featherDp"
+        const val EXTRA_REFRESH_INTERVAL_MS = "refreshIntervalMs"
         const val SETTINGS_NAME = "overlay_settings"
         const val KEEP_AFTER_CLOSE = "keepOverlayAfterClosing"
 
@@ -80,12 +82,12 @@ class OverlayService : Service() {
     private var textMarginDp = 12f
     private var cornerRadiusDp = 10f
     private var featherDp = 12f
+    private var refreshIntervalMs = 400L
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var textRecognizer: TextRecognizer? = null
-    private var lastSampleAtMs = 0L
     private var lastOcrAtMs = 0L
     private var ignoreMotionUntilMs = 0L
     private var lastFrameSignature: IntArray? = null
@@ -114,6 +116,11 @@ class OverlayService : Service() {
                 intent.getFloatExtra(EXTRA_TEXT_DIM_AMOUNT, currentTextDimAmount)
             )
             ACTION_START_CAPTURE -> startCapture(intent)
+            ACTION_UPDATE_REFRESH_INTERVAL -> {
+                refreshIntervalMs = intent.getLongExtra(EXTRA_REFRESH_INTERVAL_MS, 400L)
+                    .coerceIn(50L, 500L)
+                schedulePendingFrameDrain()
+            }
             ACTION_START, null -> {
                 currentOpacity = intent?.getFloatExtra(EXTRA_OPACITY, currentOpacity)
                     ?.coerceIn(0f, MAX_DIM_AMOUNT) ?: currentOpacity
@@ -124,6 +131,8 @@ class OverlayService : Service() {
                 textMarginDp = intent?.getFloatExtra(EXTRA_TEXT_MARGIN_DP, 12f) ?: 12f
                 cornerRadiusDp = intent?.getFloatExtra(EXTRA_CORNER_RADIUS_DP, 10f) ?: 10f
                 featherDp = intent?.getFloatExtra(EXTRA_FEATHER_DP, 12f) ?: 12f
+                refreshIntervalMs = intent?.getLongExtra(EXTRA_REFRESH_INTERVAL_MS, 400L)
+                    ?.coerceIn(50L, 500L) ?: 400L
                 startAsForeground(withMediaProjection = false)
                 showOverlay()
             }
@@ -251,18 +260,11 @@ class OverlayService : Service() {
         val height = bounds?.height() ?: metrics.heightPixels
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3).also { reader ->
-            reader.setOnImageAvailableListener({ availableReader ->
-                val now = SystemClock.uptimeMillis()
-                if (ocrInFlight) {
-                    // Leave frames queued inside ImageReader. Once OCR finishes
-                    // acquireLatestImage() gives us the newest frame instead
-                    // of waiting for another touch to produce one.
-                    pendingFrameAvailable = true
-                } else {
-                    availableReader.acquireLatestImage()?.use { image ->
-                        acceptCapturedFrame(image)
-                    }
-                }
+            reader.setOnImageAvailableListener({ _ ->
+                // Retain the latest frame until the next OCR slot, including
+                // the final frame of a scroll when no more touches arrive.
+                pendingFrameAvailable = true
+                schedulePendingFrameDrain()
             }, mainHandler)
         }
 
@@ -282,8 +284,6 @@ class OverlayService : Service() {
 
     private fun acceptCapturedFrame(image: Image) {
         val now = SystemClock.uptimeMillis()
-        if (now - lastSampleAtMs < 100L) return
-        lastSampleAtMs = now
 
         val signature = createFrameSignature(image)
         val previous = lastFrameSignature
@@ -292,11 +292,7 @@ class OverlayService : Service() {
         // A full-display projection may include our own overlay. Ignore the
         // short visual change caused by revealing new cut-outs so it cannot be
         // mistaken for user-driven scrolling.
-        if (now < ignoreMotionUntilMs) {
-            pendingFrameAvailable = true
-            schedulePendingFrameDrain()
-            return
-        }
+        val suppressMotionDetection = now < ignoreMotionUntilMs
 
         if (previous == null) {
             startOcr(image, now)
@@ -305,14 +301,14 @@ class OverlayService : Service() {
 
         val frameDifference = signatureDifference(previous, signature)
         val frameMoved = frameDifference >= 5.0
-        if (frameMoved) {
+        if (frameMoved && !suppressMotionDetection) {
             if (!motionActive) {
                 motionActive = true
                 overlayView?.hideTextRegions(animated = true)
             }
         }
 
-        if (now - lastOcrAtMs >= 400L) startOcr(image, now)
+        startOcr(image, now)
     }
 
     private fun createFrameSignature(image: Image): IntArray {
@@ -385,7 +381,10 @@ class OverlayService : Service() {
     private fun schedulePendingFrameDrain() {
         if (!pendingFrameAvailable || ocrInFlight || !isCaptureRunning) return
         mainHandler.removeCallbacks(pendingFrameDrain)
-        val delay = (ignoreMotionUntilMs - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+        // Motion suppression protects against feedback from our fade; it must
+        // not impose a second, fixed OCR interval on the user's setting.
+        val nextOcrAt = if (lastOcrAtMs == 0L) 0L else lastOcrAtMs + refreshIntervalMs
+        val delay = (nextOcrAt - SystemClock.uptimeMillis()).coerceAtLeast(0L)
         mainHandler.postDelayed(pendingFrameDrain, delay)
     }
 
@@ -422,6 +421,7 @@ class OverlayService : Service() {
         pendingFrameAvailable = false
         mainHandler.removeCallbacks(pendingFrameDrain)
         lastFrameSignature = null
+        lastOcrAtMs = 0L
         motionActive = false
         ignoreMotionUntilMs = 0L
         overlayView?.clearTextRegions()
