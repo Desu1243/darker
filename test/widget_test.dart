@@ -5,6 +5,67 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets(
+    'reopens Settings after expanding and collapsing text appearance',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      const channel = MethodChannel('com.desu1243.darker/overlay');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        (call) async => switch (call.method) {
+          'checkOverlayPermission' => false,
+          'getOverlayState' => <String, Object?>{
+            'running': false,
+            'captureRunning': false,
+          },
+          _ => null,
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(DarkerApp(preferences: preferences));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Text appearance'),
+        200,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const PageStorageKey('settings')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Text appearance'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Text appearance'));
+      await tester.pumpAndSettle();
+      expect(find.text('Text margin'), findsOneWidget);
+      await tester.ensureVisible(find.text('Text appearance'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Text appearance'));
+      await tester.pumpAndSettle();
+      expect(find.text('Text margin'), findsNothing);
+      await tester.tap(find.text('Dimmer'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.ensureVisible(find.text('Text appearance'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Text appearance'));
+      await tester.pumpAndSettle();
+      expect(find.text('Text margin'), findsOneWidget);
+    },
+  );
+
   testWidgets('shows the dimmer controls', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();

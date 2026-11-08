@@ -663,6 +663,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 14),
                 ExpansionTile(
+                  key: const PageStorageKey('textAppearance'),
                   tilePadding: EdgeInsets.zero,
                   childrenPadding: const EdgeInsets.only(top: 8),
                   shape: const Border(),
