@@ -639,6 +639,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                   value: _refreshIntervalMs,
                   min: 50,
                   max: 500,
+                  step: 5,
                   suffix: 'ms',
                   enabled: !_busy,
                   onChanged: _updateRefreshInterval,
@@ -649,7 +650,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 14),
                 _StyleSlider(
-                  label: 'Mask jitter tolerance',
+                  label: 'Region stability tolerance',
                   value: _jitterTolerancePx,
                   min: 0,
                   max: 20,
@@ -658,7 +659,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                   onChanged: _updateJitterTolerance,
                 ),
                 const Text(
-                  'Ignore small changes in text boxes. Higher values reduce jitter but allow more misalignment while scrolling. 0 px disables this filter.',
+                  'Fine-tunes movement detection and mask shrinking. Higher values favor stability over small updates. Text inside the safe area can stay fixed even at 0 px.',
                   style: TextStyle(color: Color(0xFF858894), height: 1.35),
                 ),
                 const SizedBox(height: 14),
@@ -926,6 +927,7 @@ class _StyleSlider extends StatelessWidget {
     required this.value,
     required this.min,
     required this.max,
+    this.step = 1,
     required this.suffix,
     required this.enabled,
     required this.onChanged,
@@ -935,6 +937,7 @@ class _StyleSlider extends StatelessWidget {
   final double value;
   final double min;
   final double max;
+  final double step;
   final String suffix;
   final bool enabled;
   final ValueChanged<double> onChanged;
@@ -957,7 +960,7 @@ class _StyleSlider extends StatelessWidget {
           value: value,
           min: min,
           max: max,
-          divisions: (max - min).round(),
+          divisions: ((max - min) / step).round(),
           onChanged: enabled ? onChanged : null,
         ),
       ],

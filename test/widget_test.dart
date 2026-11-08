@@ -306,6 +306,8 @@ void main() {
       (widget) => widget is Slider && widget.min == 50 && widget.max == 500,
     );
     expect(find.text('400 ms'), findsOneWidget);
+    expect(tester.widget<Slider>(slider).divisions, 90);
+    expect(find.text('Region stability tolerance'), findsOneWidget);
     tester.widget<Slider>(slider).onChanged!(50);
     await tester.pumpAndSettle();
     expect(preferences.getDouble('refreshIntervalMs'), 50);
