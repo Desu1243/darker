@@ -4,20 +4,27 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Rect
-import android.graphics.RectF
+import android.os.SystemClock
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 
 class DimmingOverlayView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private val alphaRenderer = OverlayAlphaRenderer()
+    private val regionTracker = PersistentTextRegionTracker()
+    internal var lastTrackingMetrics: TrackingMetrics? = null
+        private set
+    internal var geometryTransitionStarts = 0L
+        private set
+    internal var revealAnimationStarts = 0L
+        private set
     private var lastRendered: OverlayRenderSnapshot? = null
     private var renderVersion = 0L
 
     private var dimAmount = 0f
     private var textDimAmount = 0.175f
-    private var textRegions: List<RectF> = emptyList()
-    private var previousTextRegions: List<RectF> = emptyList()
+    private var textRegions: List<MaskRegion> = emptyList()
+    private var previousTextRegions: List<MaskRegion> = emptyList()
     private var sourceWidth = 1
     private var sourceHeight = 1
     private var marginPx = 12f * density
@@ -28,6 +35,7 @@ class DimmingOverlayView(context: Context) : View(context) {
     private var animator: ValueAnimator? = null
     private var transitionProgress = 1f
     private var transitionAnimator: ValueAnimator? = null
+    private var refreshIntervalMs = 400L
     private var fadeDurationMs = 200L
     private var jitterTolerancePx = 5f
 
@@ -47,7 +55,8 @@ class DimmingOverlayView(context: Context) : View(context) {
     }
 
     fun setRefreshInterval(intervalMs: Long) {
-        fadeDurationMs = intervalMs.coerceIn(50L, 500L) / 2L
+        refreshIntervalMs = intervalMs.coerceIn(50L, 500L)
+        fadeDurationMs = refreshIntervalMs / 2L
     }
 
     fun setJitterTolerance(tolerancePx: Float) {
@@ -66,23 +75,23 @@ class DimmingOverlayView(context: Context) : View(context) {
         imageWidth: Int,
         imageHeight: Int,
         animated: Boolean,
+        observationTimeMs: Long = SystemClock.uptimeMillis(),
+        observationGeneration: Long = 0,
     ) {
-        val sameDimensions = sourceWidth == imageWidth && sourceHeight == imageHeight
-        val displayed = if (sameDimensions) textRegions.map {
-            MaskRegion(it.left, it.top, it.right, it.bottom)
-        } else emptyList()
-        val detected = regions.map {
+        val config = TextRegionTrackingConfig(
+            imageWidth, imageHeight, if (width > 0) width else imageWidth,
+            if (height > 0) height else imageHeight,
+            marginPx, cornerRadiusPx, featherPx, jitterTolerancePx, refreshIntervalMs,
+        )
+        val update = regionTracker.update(regions.map {
             MaskRegion(it.left.toFloat(), it.top.toFloat(), it.right.toFloat(), it.bottom.toFloat())
-        }
-        val newRegions = MaskJitterFilter.stabilize(
-            displayed,
-            detected,
-            if (animated) jitterTolerancePx else 0f,
-            if (width > 0) width.toFloat() / imageWidth.coerceAtLeast(1) else 1f,
-        ).map { RectF(it.left, it.top, it.right, it.bottom) }
+        }, observationTimeMs, config, observationGeneration)
+        if (!update.accepted) return
+        lastTrackingMetrics = update.metrics
+        val newRegions = update.renderRegions
         // Faster OCR often returns the very same mask while its fade is still
         // running. Let that animation finish instead of restarting it.
-        if (animated && revealTarget == 1f && newRegions == textRegions &&
+        if (revealTarget == 1f && newRegions == textRegions &&
             sourceWidth == imageWidth && sourceHeight == imageHeight) return
         sourceWidth = imageWidth.coerceAtLeast(1)
         sourceHeight = imageHeight.coerceAtLeast(1)
@@ -109,6 +118,7 @@ class DimmingOverlayView(context: Context) : View(context) {
             previousTextRegions = textRegions
             textRegions = newRegions
             transitionProgress = 0f
+            geometryTransitionStarts++
             transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = fadeDurationMs
                 interpolator = DecelerateInterpolator()
@@ -134,7 +144,9 @@ class DimmingOverlayView(context: Context) : View(context) {
         }
     }
 
-    fun clearTextRegions() {
+    fun clearTextRegions(captureGeneration: Long? = null) {
+        regionTracker.reset(captureGeneration)
+        lastTrackingMetrics = null
         animator?.cancel()
         transitionAnimator?.cancel()
         textRegions = emptyList()
@@ -145,10 +157,14 @@ class DimmingOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (oldw > 0 && oldh > 0 && (w != oldw || h != oldh)) clearTextRegions()
+    }
+
     private fun appearance() = OverlayAppearance(
         dimAmount, textDimAmount, OverlayService.MAX_DIM_AMOUNT,
-        textRegions.map { MaskRegion(it.left, it.top, it.right, it.bottom) },
-        previousTextRegions.map { MaskRegion(it.left, it.top, it.right, it.bottom) },
+        textRegions, previousTextRegions,
         sourceWidth, sourceHeight, revealProgress, transitionProgress,
         marginPx, cornerRadiusPx, featherPx, width, height,
     )
@@ -182,6 +198,7 @@ class DimmingOverlayView(context: Context) : View(context) {
             return
         }
         revealProgress = from
+        revealAnimationStarts++
         animator = ValueAnimator.ofFloat(from, to).apply {
             duration = durationMs
             interpolator = DecelerateInterpolator()

@@ -95,7 +95,6 @@ class OverlayService : Service() {
     private var lastOcrAtMs = 0L
     private var ignoreMotionUntilMs = 0L
     private var lastFrameSignature: IntArray? = null
-    private var motionActive = false
     private var ocrInFlight = false
     private val reconstructionWorker = Executors.newSingleThreadExecutor()
     private val reconstructor = OverlayFrameReconstructor()
@@ -328,10 +327,9 @@ class OverlayService : Service() {
         val frameDifference = signatureDifference(previous, signature)
         val frameMoved = frameDifference >= 5.0
         if (frameMoved && !suppressMotionDetection) {
-            if (!motionActive) {
-                motionActive = true
-                overlayView?.hideTextRegions(animated = true)
-            }
+            // Raw capture brightness also changes with our overlay. Only the
+            // persistent tracker's OCR geometry decides whether masks move.
+            if (isDebugBuild()) Log.v(TAG, "Capture brightness changed; awaiting OCR geometry")
         }
 
         startOcr(image, now)
@@ -425,7 +423,7 @@ class OverlayService : Service() {
                         ownedBitmap.recycle()
                         finishOcr()
                     } else {
-                        recognizeBitmap(ownedBitmap, generation)
+                        recognizeBitmap(ownedBitmap, generation, now)
                     }
                 }
             } catch (error: Exception) {
@@ -450,7 +448,7 @@ class OverlayService : Service() {
         if (pendingFrameAvailable) schedulePendingFrameDrain()
     }
 
-    private fun recognizeBitmap(bitmap: Bitmap, generation: Int) {
+    private fun recognizeBitmap(bitmap: Bitmap, generation: Int, observationTimeMs: Long) {
         try {
             val recognizer = textRecognizer ?: TextRecognition
                 .getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -469,7 +467,10 @@ class OverlayService : Service() {
                         bitmap.width,
                         bitmap.height,
                         animated = true,
+                        observationTimeMs = observationTimeMs,
+                        observationGeneration = generation.toLong(),
                     )
+                    if (isDebugBuild()) Log.d(TAG, "Text tracking ${overlayView?.lastTrackingMetrics}")
                     ignoreMotionUntilMs = SystemClock.uptimeMillis() + 360L
                     if (isDebugBuild()) Log.v(TAG, "OCR found ${boxes.size} text lines")
                 }
@@ -525,9 +526,8 @@ class OverlayService : Service() {
         mainHandler.removeCallbacks(pendingFrameDrain)
         lastFrameSignature = null
         lastOcrAtMs = 0L
-        motionActive = false
         ignoreMotionUntilMs = 0L
-        overlayView?.clearTextRegions()
+        overlayView?.clearTextRegions(captureGeneration.toLong())
         virtualDisplay?.release()
         virtualDisplay = null
         val releasedReader = imageReader

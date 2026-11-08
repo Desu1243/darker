@@ -176,7 +176,7 @@ class OverlayAlphaRendererTest {
         view.draw(Canvas(bitmap))
         assertNotNull(view.reconstructionSnapshot())
         for (left in listOf(24, 4)) {
-            view.setTextRegions(listOf(android.graphics.Rect(left, 16, left + 20, 48)), 64, 64, true)
+            view.setTextRegions(listOf(android.graphics.Rect(left, 16, left + 40, 48)), 64, 64, true)
             bitmap.eraseColor(0)
             view.draw(Canvas(bitmap))
             assertNull(view.reconstructionSnapshot())

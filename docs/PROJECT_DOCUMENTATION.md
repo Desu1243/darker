@@ -18,7 +18,10 @@ application underneath.
 | [MainActivity.kt](../android/app/src/main/kotlin/com/desu1243/darker/MainActivity.kt) | Flutter/Android bridge, permission requests, and service commands. |
 | [OverlayService.kt](../android/app/src/main/kotlin/com/desu1243/darker/OverlayService.kt) | Overlay window, foreground notification, capture resources, frame scheduling, and OCR. |
 | [DimmingOverlayView.kt](../android/app/src/main/kotlin/com/desu1243/darker/DimmingOverlayView.kt) | Rectangle filtering integration, animations, and Canvas mask rendering. |
-| [MaskJitterFilter.kt](../android/app/src/main/kotlin/com/desu1243/darker/MaskJitterFilter.kt) | Android-independent rectangle stabilization algorithm. |
+| [PersistentTextRegionTracker.kt](../android/app/src/main/kotlin/com/desu1243/darker/PersistentTextRegionTracker.kt) | Persistent IDs, safe-area holds, edge hysteresis, grouping and missing-line persistence. |
+| [TextRegionGeometry.kt](../android/app/src/main/kotlin/com/desu1243/darker/TextRegionGeometry.kt) | Capture/overlay units, configuration and analytical safe-area checks. |
+| [TextRegionMatcher.kt](../android/app/src/main/kotlin/com/desu1243/darker/TextRegionMatcher.kt) | Spatially gated, deterministic minimum-cost one-to-one matching. |
+| [MaskJitterFilter.kt](../android/app/src/main/kotlin/com/desu1243/darker/MaskJitterFilter.kt) | Legacy stabilizer, retained with its tests; absent from the active pipeline. |
 | [AndroidManifest.xml](../android/app/src/main/AndroidManifest.xml) | Overlay and foreground-service permissions and Android components. |
 
 The UI is Flutter, but the cross-application overlay and OCR pipeline are native
@@ -129,7 +132,7 @@ flowchart TD
     E --> R[Worker: copy image to bitmap / guarded overlay reconstruction]
     R --> F[ML Kit OCR]
     F --> G[Text-line bounding rectangles]
-    G --> H[MaskJitterFilter: stable rectangle anchors]
+    G --> H[Persistent tracker: IDs / safe areas / hysteresis]
     H --> I[Reveal and geometry fade animations]
     I --> J[Canvas mask layers / DST_OUT]
     J -. full-display capture can include overlay .-> A
@@ -173,33 +176,17 @@ last queued image after a scroll can therefore be processed without another
 touch. If no new image is available, the pending flag is cleared. The code does
 not run OCR on a cached bitmap periodically when no frames arrive.
 
-### 5.3 Motion signature
+### 5.3 Capture brightness diagnostic
 
-Before OCR, `acceptCapturedFrame()` samples an 18-by-32 grid: 576 locations from
-the image buffer. Offsets use the image plane's `rowStride` and `pixelStride`.
-Each RGB sample is reduced to integer brightness:
+`acceptCapturedFrame()` retains the small 18-by-32 brightness signature and its
+5.0 mean-difference threshold. The 360 ms suppression period after OCR suppresses
+these diagnostic events during overlay fades. Unsuppressed changes now produce
+only a debug message: they do not hide masks or control tracker motion.
 
-```text
-brightness = (30 * red + 59 * green + 11 * blue) / 100
-frameDifference = mean(abs(previousBrightness - currentBrightness))
-```
-
-A difference of at least `5.0` is treated as motion. This is a brightness
-threshold, unrelated to the user's pixel-based jitter tolerance. Motion
-detection does not gate OCR: recognition still runs for the accepted frame.
-
-After every successful OCR result, `ignoreMotionUntilMs` is set to current
-uptime plus **360 ms**. During this window the frame signature is still updated,
-but its difference cannot trigger mask hiding. This prevents some overlay
-animation changes in full-display capture from being treated as scrolling.
-The suppression interval is fixed; it is neither the refresh interval nor the
-fade duration, and it does not delay OCR.
-
-Implementation detail: `motionActive` becomes true on the first unsuppressed
-motion event and is reset by `releaseCapture()`, not by each OCR result. As
-written, this path requests a hide once per capture session. Subsequent updates
-continue through OCR and geometry cross-fades; there is no continuous
-touch-driven movement/stillness mode.
+The old `motionActive` flag was sticky until capture reset and is removed.
+Raw MediaProjection brightness can change due to the overlay itself, so it is
+not reliable scrolling evidence. Motion now comes from matched OCR observations
+(section 6). Capture scheduling and the signature sampling coordinates are unchanged.
 
 ### 5.4 Image conversion and OCR
 
@@ -235,49 +222,136 @@ failure logs a warning and leaves the existing mask unchanged. A successful
 result containing no lines is different: it supplies an empty new mask, so the
 old regions can fade away.
 
-## 6. Stabilizing text rectangles
+## 6. Persistent text regions
 
-`DimmingOverlayView.setTextRegions()` converts detections to `MaskRegion` values
-and invokes `MaskJitterFilter.stabilize()` before changing animation state.
+Raw ML Kit line rectangles enter `DimmingOverlayView.setTextRegions()`, which
+owns a main-thread-confined `PersistentTextRegionTracker`. The service supplies
+the OCR slot's uptime timestamp and capture generation after its existing stale
+result check. Reconstruction still precedes ML Kit and is unchanged.
 
-For each new rectangle, the filter finds the nearest unmatched accepted
-rectangle using the largest displacement among its four edges:
+Each persistent `TrackedTextRegion` has a monotonic lifetime ID, `stableBounds`
+(the geometry currently rendered), `lastObservedBounds` (latest OCR geometry),
+last-seen timestamp, match/miss counters, NEW/ACTIVE/MISSING/REMOVING state and
+bounded motion/per-edge shrink evidence. Observations update identity/evidence;
+they do not automatically update stable bounds. No recognized text is retained.
 
-```text
-edgeDistance(a, b) = max(
-    abs(a.left - b.left), abs(a.top - b.top),
-    abs(a.right - b.right), abs(a.bottom - b.bottom)
-)
-```
+Tracking uses capture pixels. Uniform renderer scale is
+`overlayWidth/captureWidth` for both axes, with zero guessed offsets. Margin,
+corner radius and softness are converted from dp to overlay pixels by the view
+once. Jitter tolerance remains **overlay pixels**, divided by that same scale
+when needed by the tracker. Capture dimensions, overlay dimensions or mask style
+changes reset tracking. Live tolerance/refresh changes preserve IDs and take
+effect on the next OCR update. View resizing and capture release clear masks and
+tracker state immediately. IDs are never recycled by a reset.
 
-If that distance is at most the tolerance, the old rectangle is reused exactly.
-Otherwise the new coordinates are accepted. Each old rectangle can anchor at
-most one new rectangle. Results are sorted by top, left, bottom, and right to
-normalize simple OCR ordering changes. Matching is greedy and geometric; it
-does not use recognized strings or persistent text identities.
+### 6.1 Assignment and grouping
 
-Tolerance is expressed in **overlay screen pixels**, not dp. To compare capture
-coordinates, the view supplies the same scale used for rendering:
+Detections are finite-checked, clipped to capture bounds, deduplicated and sorted
+by top/left/bottom/right. Matching uses last observations, not stable bounds.
+Candidates combine center displacement, IoU and width/height similarity. Gates
+reject vertical displacement above max(10 overlay px, 0.9 times line height),
+horizontal displacement above max(20 overlay px, 0.35 times width), and height/
+width ratios below 0.5/0.3. Accepted costs are below the unmatched cost of 4.
 
-```text
-scale = overlayWidth / capturedImageWidth
-toleranceInCaptureCoordinates = tolerancePx / max(0.001, scale)
-```
+Spatial ranges restrict candidate comparisons. Connected candidate components
+are assigned independently with minimum-cost one-to-one Hungarian assignment;
+single-pair components take a direct path. Sorted detections and persistent ID
+order resolve ties deterministically. Nearby lines do not greedily steal each
+other's only plausible match. This remains geometry matching: identical repeated
+lines or large jumps can be inherently ambiguous.
 
-If capture dimensions change, old rectangles are not used as anchors. A zero
-tolerance accepts all nonzero coordinate movement while still allowing exact
-matches and order normalization.
+A preliminary overlap graph handles 1-to-many/many-to-1 OCR grouping. Each edge
+requires intersection/minimum-area >=0.50; group union IoU must be >=0.40.
+The first ambiguous split/merge preserves old masks and consumes the observations
+without creating duplicates or pretending a merged detection independently
+matched multiple regions. Stable grouping needs at least two results over
+max(350 ms, refresh interval) before replacing the old topology with new IDs.
+An ambiguity cannot protect a region longer than max(750 ms, twice the interval)
+across processed observations, even if its grouping keeps changing. Ordinary
+unmatched new lines appear on their first result. If a pending group's union
+moves with a separately established coherent scroll vector (within 3 overlay
+pixels), old group masks are replaced immediately rather than trailing through
+probation. Stationary ambiguous neighbors remain protected.
 
-The anchor is the last accepted target rectangle, not the previous raw OCR
-result and not a snapshot of the partially animated mask. With a 5 px tolerance,
-successive positions at offsets 2, 4, and 5 px retain the anchor. An offset of
-6 px updates it. Slow scrolling therefore accumulates instead of being ignored
-indefinitely. A stable neighbor can remain anchored while a moving line updates.
+### 6.2 Safe interior
 
-New rectangles are included immediately and missing rectangles are removed from
-the target immediately. The filter does not debounce intermittent missing lines
-or stabilize changes where OCR splits/merges lines. Those changes still produce
-geometry transitions and can contribute to visible variation.
+`SafeAreaEvaluator` checks a padded observation against an eroded rounded mask
+analytically, without allocating or scanning pixels. The internal target is at
+least 98% mask coverage. The source is the same expanded rounded rectangle as
+`OverlayAlphaRenderer`, with its radius clamped to half the rectangle size.
+
+For positive softness, the guard distance is `3 * sigma + 1` overlay pixels,
+where `sigma = 0.57735 * featherRadius + 0.5`. The radius-to-sigma conversion is
+from [Skia's blur implementation](https://android.googlesource.com/platform/external/skia/+/31dc48138c/src/core/SkBlurMask.cpp).
+Three sigma is a conservative approximation, not a vendor-independent exact
+BlurMaskFilter equation. Sharp edges use a 1 px antialias guard. Eroding also
+reduces the rounded radius. All four corners of the OCR rectangle, padded by
+**2 overlay pixels**, must be inside this convex interior and overlay dimensions.
+Thus testing the expanded rectangle alone is insufficient. Native graphics tests
+independently rasterize the shared renderer and check accepted interiors,
+including every padded pixel in the selected cases, against >=250/255 coverage.
+Overlaps can only improve removal coverage; containment does not rely on them.
+Reveal/cross-fade progress is not used to redefine spatial readability: these
+existing animations still temporarily attenuate a newly accepted target mask.
+
+If the stable OCR bounds themselves cannot fit that interior, safe-area holding
+is unavailable and edge displacement <= the user's jitter tolerance holds the
+anchor instead. In particular the default margin 12 dp / softness 12 dp often
+cannot provide a >=98% interior; the code does not silently enlarge the user's
+mask to manufacture one. Persistence and hysteresis still operate in this case.
+No algorithm can guarantee full illumination with zero margin and a feathered
+edge. Jitter tolerance zero disables tolerance holding but not a valid safe area.
+
+### 6.3 Edge hysteresis and motion
+
+Safe observations keep exactly the same stable geometry. Ordinary small shrink
+observations are held too. Large sustained contractions are an intentional
+exception: each edge independently needs inward change exceeding
+max(4 overlay px, twice tolerance, 15% of the relevant stable dimension), at least
+three consistent observations, and max(600 ms, twice refresh interval) elapsed.
+Consistency is within 2 overlay pixels and the outward-most supporting candidate
+is retained. The resulting mask must remain safe when safe containment is
+available. Missing/ambiguous/moving observations reset contraction evidence.
+
+If containment fails (or fallback tolerance is exceeded), only outward edges
+expand, immediately, to observed coordinates plus a 1 overlay px buffer.
+Unrelated edges remain fixed. Geometry is always evaluated against anchored
+bounds and current observations; deltas are never cumulatively added to a mask.
+
+Motion uses differences between last observed centers, shape similarity and
+short directional evidence. A large single-line displacement follows immediately.
+Smaller consistent movement requires two directional steps and departure from
+the stable tolerance; established motion then follows each observation exactly,
+including contracting the trailing edge. It stops when that movement evidence
+stops. A coherent median vector from at least two matches and >=70% agreement
+also identifies scrolling. Only agreeing lines follow it, so a stationary neighbor
+is not forced to move. Genuine movement deliberately overrides spatial safe-area
+holding; otherwise slow scroll would simply grow masks indefinitely.
+
+### 6.4 Missing lines, page changes and renderer updates
+
+An isolated miss marks MISSING and retains geometry. It needs at least two misses
+and max(350 ms, 1.5 times refresh interval) since last seen to retire. One empty
+result is also retained, even after a long gap; subsequent empty observations use
+a shorter max(180 ms, refresh interval) deadline. No timer removes regions without
+new OCR evidence. Clear new content with <25% matched continuity retires unmatched
+old regions immediately. Coherent scrolling also retires unmatched old regions;
+a previously moving line predicted to leave the display retires on its first
+miss. Large unmatchable scroll jumps create new IDs rather than reuse unrelated
+ones. Capture restart clears immediately, with no persistence timeout.
+
+The cached render collection is sorted stable geometry only. If it is equal,
+the same collection is returned and the view does not restart either animator.
+A returning missing line reuses its ID and mask. A genuine removal omits its
+region and uses the existing geometry cross-fade; initial additions use the
+existing reveal. Shared Canvas composition and reconstruction snapshots are
+unchanged. Transition interruption still starts from the previous target, not a
+blended raster; this preexisting visual discontinuity remains documented.
+
+`MaskJitterFilter` is no longer invoked in this path: there is no second filter
+hiding movement observations before or after tracking. Its original eight tests
+remain, with corresponding tolerance/scale/accumulation/order/neighbor behavior
+covered in the persistent tracker suite.
 
 ## 7. Opacity model
 
@@ -354,7 +428,7 @@ the new geometry and fades its reveal from zero. Otherwise it retains the old
 geometry in `previousTextRegions`, installs the new geometry in `textRegions`,
 and animates `t` from 0 to 1 while revealing toward 1.
 
-If stabilized regions and image dimensions are unchanged, and reveal already
+If stable render geometry and image dimensions are unchanged, and reveal already
 targets 1, the method returns without restarting either fade. When reveal is
 targeting zero, an unchanged OCR result can still request a reveal again.
 
@@ -428,8 +502,8 @@ Useful debugging distinctions:
 
 | Symptom | Relevant implementation |
 | --- | --- |
-| Small edge jitter on stationary text | OCR box variation, jitter tolerance, and changes in line grouping. |
-| Missing line briefly dims | Successful OCR omitted a box; tolerance does not retain missing boxes. |
+| Small edge jitter on stationary text | Safe-area availability, tracker motion evidence, tolerance and grouping confirmation. |
+| Missing line briefly dims | Persistence deadline, page/scroll retirement evidence or confirmed grouping changes. |
 | Mask trails a slow scroll | Accepted anchors, tolerance, OCR processing latency, and fade duration. |
 | Geometric jump during fast updates | Cross-fade interruption uses the previous target, not the current raster. |
 | Mask offset in app-only capture | Capture dimensions, letterboxing, and absent offset mapping. |
@@ -451,7 +525,7 @@ flutter test --reporter expanded
 flutter build apk --debug
 ```
 
-Run native rectangle-filter tests from `android`:
+Run native unit tests from `android`:
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest
@@ -482,8 +556,9 @@ configured.
 `OverlayAlphaRenderer.kt` now owns the original software Canvas operations. Both
 `DimmingOverlayView.onDraw()` and `OverlayFrameReconstructor.kt` call this exact
 renderer, including saveLayer, DST_OUT, ADD, integer paint alpha, rounded corners,
-uniform capture-to-overlay scale, and BlurMaskFilter.NORMAL. The visible mask
-algorithm, MaskJitterFilter, animation timings and Flutter settings are unchanged.
+uniform capture-to-overlay scale, and BlurMaskFilter.NORMAL. The Canvas mask
+algorithm, animation timings and Flutter settings are unchanged; section 6 describes
+the persistent tracker now replacing MaskJitterFilter in the active path.
 
 For each raster pixel, let `q` be its resulting 8-bit software alpha. Effective
 black alpha is `q / 255 * windowAlpha`, with windowAlpha exactly 0.70 in this
@@ -679,9 +754,95 @@ stability or elimination of visible flicker. Physical-device validation remains
 outstanding; reconstruction therefore remains guarded and the overall outcome is
 partial pending that validation.
 
-Verification recorded on 2026-11-08: Flutter analysis clean; 3 Flutter tests,
+Reconstruction-stage verification recorded earlier on 2026-11-08: Flutter analysis clean; 3 Flutter tests,
 33 native unit tests (including all 8 existing MaskJitterFilter tests), and 2
 Android emulator instrumentation tests passed. Debug APK built successfully at
 `build/app/outputs/flutter-apk/app-debug.apk`. Existing Android Gradle plugin
 configuration deprecation warnings remain. No physical phone was used and no
 MediaProjection presence/calibration or real OCR A/B test was performed.
+
+
+## 13. Persistent-region verification and limitations
+
+The new native tests are `PersistentTextRegionTrackerTest.kt` (pure geometry and
+synthetic timestamped sequences) and `PersistentTextRegionRenderingTest.kt`
+(Robolectric native Canvas). They cover safe holds, alternating jitter, edge
+expansion, timed contraction, identity assignment/order changes, split/merge
+probation, missing/returning lines, page changes, coherent/independent motion,
+scroll retirement, density and scale, capture generation, out-of-order callbacks,
+reset, invalid inputs and bounded state. Rendering tests assert unchanged shared
+alpha state and animator start counters, genuine fade/reveal behavior, resize
+clearing, and rejection of animated snapshots by the existing reconstruction
+integration. Synthetic line rectangles stand in for ML Kit in these unit tests;
+they do not prove OCR quality.
+
+The earlier interrupted-transition test now supplies an actual expanding/moving
+rectangle instead of an inward-only observation. Its purpose remains to verify
+that interrupted animations are ineligible for reconstruction; contraction
+observations are intentionally debounced by the new tracker.
+
+`PersistentTextRegionDeviceTest.kt` runs on Android with synthetic observations.
+Across 70 updates, both 100- and 300-line stationary sequences returned the exact
+same render collection every time (70/70 suppressed geometry updates). A separate
+continuous-motion sequence follows observations and retains IDs. No tracker
+bitmap allocations, pixel scanning, OCR jobs or new runtime dependencies exist.
+
+Measured on the Pixel_7 API 37 x86_64 emulator, debug build, synthetic 1080x2400
+observations, 60 measured updates after 10 warmups:
+
+| Matching implementation | Lines | Median tracker time | p95 tracker time |
+| --- | --- | --- | --- |
+| Initial dense assignment/group comparisons | 100 | 4.81 ms | 5.47 ms |
+| Initial dense assignment/group comparisons | 300 | 38.70 ms | 74.63 ms |
+| Spatial candidates / component assignments (first run) | 100 | 3.15 ms | 8.62 ms |
+| Spatial candidates / component assignments (first run) | 300 | 7.71 ms | 16.27 ms |
+| Spatial candidates / component assignments (final run) | 100 | 2.85 ms | 4.76 ms |
+| Spatial candidates / component assignments (final run) | 300 | 4.32 ms | 5.51 ms |
+
+These are synthetic emulator CPU measurements, not physical-phone latency or
+battery measurements. Dense overlapping ambiguous geometry can still create a
+large assignment component with cubic worst-case cost. State is capped at 512
+regions and 512 canonical detections; excess detections are ignored and counted
+as dropped. All group history is limited to the current ambiguous groups, all
+per-region history to four edge candidates and a few scalar motion values.
+No full bitmap or unbounded frame history is added by tracking.
+
+Debug-only service logs include active/new/matched/missing/removed counts,
+safe hits, expansions/contractions, motion/group counts, suppressed updates,
+dropped detections, elapsed tracker nanoseconds, maximum missing age and maximum
+observed-to-render edge offset in overlay pixels. `geometryUpdateRate` counts
+OCR updates whose visible geometry changed divided by accepted OCR updates,
+including the first detection. Low rate must be checked alongside retention and
+lag; it is not proof of readability. No recognized strings or screenshots are
+stored or logged by this instrumentation.
+
+Physical-phone checks remain necessary: stationary ordinary/decorative fonts
+for >=30 seconds; slow and fast reading scroll; page changes; margin/softness
+extremes; 50/400/500 ms intervals; and capture stop/restart/rotation while OCR is
+in flight. Matching cannot disambiguate identical nearby lines or reliably infer
+content identity when unrelated text occupies exactly the same rectangles.
+The safe interior is conservative rather than a compositor measurement. Original
+reconstruction remains guarded as described in section 12, with its outstanding
+physical-device validation unchanged. No claim is made of eliminating visible
+flicker on a physical device.
+
+Real pipeline smoke check on the same emulator: full-display MediaProjection,
+ML Kit and tracking were run on the app's stationary Dimmer page, with the
+existing reconstruction guard reporting `unvalidated-session`. Between
+11:08:28.871 and 11:08:58.730 emulator time, 32 OCR results across 13 regions
+caused **zero** geometry changes, additions, removals or motion updates. Median
+tracker time in that window was 0.611 ms. Earlier initial settling did produce
+geometry updates; this is not a claim that every sample from capture start was
+stable. Switching to Settings was exercised as well: the next 10-second sample
+had 11 OCR results, 2 changed-geometry updates, 14 additions and 6 retirements,
+with maximum recorded missing age 423 ms. Some geometrically coincident regions
+can retain identity across page changes; no text identity is inferred.
+These are log/geometry observations, not a physical visual assessment or proof
+of glyph readability. No screenshots or OCR strings were exported.
+
+Final tracker verification on 2026-11-08: `flutter analyze` clean; all 3 Flutter
+tests, all 84 native unit tests (including the existing reconstruction and eight
+legacy jitter tests), and all 3 Android emulator instrumentation tests passed.
+The debug APK build succeeded. No Flutter UI changes or reconstruction engine
+changes were made, and no Git commit was created. Physical-device perception,
+decorative-font readability and battery impact remain unverified.
