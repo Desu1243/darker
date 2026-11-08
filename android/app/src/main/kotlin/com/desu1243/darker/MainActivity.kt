@@ -26,6 +26,7 @@ class MainActivity : FlutterActivity() {
     private var pendingCornerRadiusDp = 10f
     private var pendingFeatherDp = 12f
     private var pendingRefreshIntervalMs = 400L
+    private var pendingJitterTolerancePx = 5f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,6 +93,9 @@ class MainActivity : FlutterActivity() {
                         pendingRefreshIntervalMs =
                             (call.argument<Number>("refreshIntervalMs")?.toLong() ?: 400L)
                                 .coerceIn(50L, 500L)
+                        pendingJitterTolerancePx =
+                            (call.argument<Number>("jitterTolerancePx")?.toFloat() ?: 5f)
+                                .coerceIn(0f, 20f)
                         if (textAware) {
                             @Suppress("DEPRECATION")
                             startActivityForResult(
@@ -103,6 +107,18 @@ class MainActivity : FlutterActivity() {
                             startOverlayService(pendingOpacity, textAware = false)
                             result.success(mapOf("started" to true))
                         }
+                    }
+                    "updateJitterTolerance" -> {
+                        if (OverlayService.isRunning) {
+                            startService(
+                                Intent(this, OverlayService::class.java)
+                                    .setAction(OverlayService.ACTION_UPDATE_JITTER_TOLERANCE)
+                                    .putExtra(OverlayService.EXTRA_JITTER_TOLERANCE_PX,
+                                        (call.argument<Number>("jitterTolerancePx")?.toFloat() ?: 5f)
+                                            .coerceIn(0f, 20f))
+                            )
+                        }
+                        result.success(null)
                     }
                     "updateRefreshInterval" -> {
                         if (OverlayService.isRunning) {
@@ -179,6 +195,7 @@ class MainActivity : FlutterActivity() {
             .putExtra(OverlayService.EXTRA_CORNER_RADIUS_DP, pendingCornerRadiusDp)
             .putExtra(OverlayService.EXTRA_FEATHER_DP, pendingFeatherDp)
             .putExtra(OverlayService.EXTRA_REFRESH_INTERVAL_MS, pendingRefreshIntervalMs)
+            .putExtra(OverlayService.EXTRA_JITTER_TOLERANCE_PX, pendingJitterTolerancePx)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ContextCompat.startForegroundService(this, intent)
         } else {

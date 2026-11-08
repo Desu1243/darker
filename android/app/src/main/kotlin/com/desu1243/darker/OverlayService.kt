@@ -41,6 +41,7 @@ class OverlayService : Service() {
         const val ACTION_STOP = "com.desu1243.darker.action.STOP"
         const val ACTION_START_CAPTURE = "com.desu1243.darker.action.START_CAPTURE"
         const val ACTION_UPDATE_REFRESH_INTERVAL = "com.desu1243.darker.action.UPDATE_REFRESH_INTERVAL"
+        const val ACTION_UPDATE_JITTER_TOLERANCE = "com.desu1243.darker.action.UPDATE_JITTER_TOLERANCE"
 
         const val EXTRA_OPACITY = "opacity"
         const val EXTRA_TEXT_DIM_AMOUNT = "textDimAmount"
@@ -51,6 +52,7 @@ class OverlayService : Service() {
         const val EXTRA_CORNER_RADIUS_DP = "cornerRadiusDp"
         const val EXTRA_FEATHER_DP = "featherDp"
         const val EXTRA_REFRESH_INTERVAL_MS = "refreshIntervalMs"
+        const val EXTRA_JITTER_TOLERANCE_PX = "jitterTolerancePx"
         const val SETTINGS_NAME = "overlay_settings"
         const val KEEP_AFTER_CLOSE = "keepOverlayAfterClosing"
 
@@ -83,6 +85,7 @@ class OverlayService : Service() {
     private var cornerRadiusDp = 10f
     private var featherDp = 12f
     private var refreshIntervalMs = 400L
+    private var jitterTolerancePx = 5f
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -116,6 +119,11 @@ class OverlayService : Service() {
                 intent.getFloatExtra(EXTRA_TEXT_DIM_AMOUNT, currentTextDimAmount)
             )
             ACTION_START_CAPTURE -> startCapture(intent)
+            ACTION_UPDATE_JITTER_TOLERANCE -> {
+                jitterTolerancePx = intent.getFloatExtra(EXTRA_JITTER_TOLERANCE_PX, 5f)
+                    .coerceIn(0f, 20f)
+                overlayView?.setJitterTolerance(jitterTolerancePx)
+            }
             ACTION_UPDATE_REFRESH_INTERVAL -> {
                 refreshIntervalMs = intent.getLongExtra(EXTRA_REFRESH_INTERVAL_MS, 400L)
                     .coerceIn(50L, 500L)
@@ -134,6 +142,8 @@ class OverlayService : Service() {
                 featherDp = intent?.getFloatExtra(EXTRA_FEATHER_DP, 12f) ?: 12f
                 refreshIntervalMs = intent?.getLongExtra(EXTRA_REFRESH_INTERVAL_MS, 400L)
                     ?.coerceIn(50L, 500L) ?: 400L
+                jitterTolerancePx = intent?.getFloatExtra(EXTRA_JITTER_TOLERANCE_PX, 5f)
+                    ?.coerceIn(0f, 20f) ?: 5f
                 startAsForeground(withMediaProjection = false)
                 showOverlay()
             }
@@ -173,6 +183,7 @@ class OverlayService : Service() {
                 setTextDimAmount(currentTextDimAmount)
                 setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
                 setRefreshInterval(refreshIntervalMs)
+                setJitterTolerance(jitterTolerancePx)
             }
             overlayParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -204,6 +215,7 @@ class OverlayService : Service() {
             overlayView?.setTextDimAmount(currentTextDimAmount)
             overlayView?.setTextStyle(textMarginDp, cornerRadiusDp, featherDp)
             overlayView?.setRefreshInterval(refreshIntervalMs)
+            overlayView?.setJitterTolerance(jitterTolerancePx)
         }
         isRunning = true
     }

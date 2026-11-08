@@ -59,6 +59,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   static const _cornerRadiusKey = 'cornerRadius';
   static const _edgeSoftnessKey = 'edgeSoftness';
   static const _refreshIntervalKey = 'refreshIntervalMs';
+  static const _jitterToleranceKey = 'jitterTolerancePx';
 
   // User-facing opacity describes how visible the underlying screen remains:
   // 100% means no dimming, while 0% means maximum safe dimming.
@@ -76,6 +77,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
   double _cornerRadius = 10;
   double _edgeSoftness = 12;
   double _refreshIntervalMs = 400;
+  double _jitterTolerancePx = 5;
 
   @override
   void initState() {
@@ -99,6 +101,8 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       1.0,
     );
     _textAware = preferences.getBool(_textAwareKey) ?? true;
+    _jitterTolerancePx = (preferences.getDouble(_jitterToleranceKey) ?? 5)
+        .clamp(0.0, 20.0);
     _refreshIntervalMs = (preferences.getDouble(_refreshIntervalKey) ?? 400)
         .clamp(50.0, 500.0);
     _keepOverlayAfterClosing =
@@ -238,6 +242,7 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
           'cornerRadiusDp': _cornerRadius,
           'featherDp': _edgeSoftness,
           'refreshIntervalMs': _refreshIntervalMs.round(),
+          'jitterTolerancePx': _jitterTolerancePx,
         },
       );
       final waiting = response?['awaitingCapturePermission'] as bool? ?? false;
@@ -301,6 +306,19 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
       });
     } on PlatformException catch (error) {
       _showMessage(error.message ?? 'Could not update the refresh interval.');
+    }
+  }
+
+  Future<void> _updateJitterTolerance(double value) async {
+    setState(() => _jitterTolerancePx = value);
+    _saveDouble(_jitterToleranceKey, value);
+    if (!_overlayRunning) return;
+    try {
+      await _channel.invokeMethod<void>('updateJitterTolerance', {
+        'jitterTolerancePx': value,
+      });
+    } on PlatformException catch (error) {
+      _showMessage(error.message ?? 'Could not update jitter tolerance.');
     }
   }
 
@@ -627,6 +645,20 @@ class _DimmerPageState extends State<DimmerPage> with WidgetsBindingObserver {
                 ),
                 const Text(
                   'Lower values respond faster but use more battery. Actual updates depend on text recognition speed.',
+                  style: TextStyle(color: Color(0xFF858894), height: 1.35),
+                ),
+                const SizedBox(height: 14),
+                _StyleSlider(
+                  label: 'Mask jitter tolerance',
+                  value: _jitterTolerancePx,
+                  min: 0,
+                  max: 20,
+                  suffix: 'px',
+                  enabled: !_busy,
+                  onChanged: _updateJitterTolerance,
+                ),
+                const Text(
+                  'Ignore small changes in text boxes. Higher values reduce jitter but allow more misalignment while scrolling. 0 px disables this filter.',
                   style: TextStyle(color: Color(0xFF858894), height: 1.35),
                 ),
                 const SizedBox(height: 14),

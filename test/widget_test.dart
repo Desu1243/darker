@@ -96,6 +96,7 @@ void main() {
       'cornerRadius': 7.0,
       'edgeSoftness': 24.0,
       'refreshIntervalMs': 125.0,
+      'jitterTolerancePx': 7.0,
     });
     final preferences = await SharedPreferences.getInstance();
     const channel = MethodChannel('com.desu1243.darker/overlay');
@@ -146,6 +147,7 @@ void main() {
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
     expect(find.text('125 ms'), findsOneWidget);
+    expect(find.text('7 px'), findsOneWidget);
     expect(find.text('Text margin'), findsNothing);
     await tester.scrollUntilVisible(
       find.text('Text appearance'),
@@ -207,6 +209,7 @@ void main() {
     final preferences = await SharedPreferences.getInstance();
     const channel = MethodChannel('com.desu1243.darker/overlay');
     final updates = <int>[];
+    final toleranceUpdates = <double>[];
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
       call,
     ) async {
@@ -220,6 +223,11 @@ void main() {
       }
       if (call.method == 'updateRefreshInterval') {
         updates.add((call.arguments as Map)['refreshIntervalMs'] as int);
+      }
+      if (call.method == 'updateJitterTolerance') {
+        toleranceUpdates.add(
+          (call.arguments as Map)['jitterTolerancePx'] as double,
+        );
       }
       return null;
     });
@@ -245,5 +253,16 @@ void main() {
     await tester.pumpAndSettle();
     expect(preferences.getDouble('refreshIntervalMs'), 500);
     expect(updates, [50, 500]);
+    final toleranceSlider = find.byWidgetPredicate(
+      (widget) => widget is Slider && widget.min == 0 && widget.max == 20,
+    );
+    expect(find.text('5 px'), findsOneWidget);
+    tester.widget<Slider>(toleranceSlider).onChanged!(0);
+    await tester.pumpAndSettle();
+    expect(preferences.getDouble('jitterTolerancePx'), 0);
+    tester.widget<Slider>(toleranceSlider).onChanged!(8);
+    await tester.pumpAndSettle();
+    expect(preferences.getDouble('jitterTolerancePx'), 8);
+    expect(toleranceUpdates, [0, 8]);
   });
 }

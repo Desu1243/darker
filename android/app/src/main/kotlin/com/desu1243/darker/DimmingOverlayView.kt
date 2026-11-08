@@ -43,6 +43,7 @@ class DimmingOverlayView(context: Context) : View(context) {
     private var transitionProgress = 1f
     private var transitionAnimator: ValueAnimator? = null
     private var fadeDurationMs = 200L
+    private var jitterTolerancePx = 5f
 
     init {
         setLayerType(LAYER_TYPE_SOFTWARE, null)
@@ -63,6 +64,10 @@ class DimmingOverlayView(context: Context) : View(context) {
         fadeDurationMs = intervalMs.coerceIn(50L, 500L) / 2L
     }
 
+    fun setJitterTolerance(tolerancePx: Float) {
+        jitterTolerancePx = tolerancePx.coerceIn(0f, 20f)
+    }
+
     fun setTextStyle(marginDp: Float, cornerRadiusDp: Float, featherDp: Float) {
         marginPx = marginDp.coerceAtLeast(0f) * density
         cornerRadiusPx = cornerRadiusDp.coerceAtLeast(0f) * density
@@ -76,7 +81,19 @@ class DimmingOverlayView(context: Context) : View(context) {
         imageHeight: Int,
         animated: Boolean,
     ) {
-        val newRegions = regions.map { RectF(it) }
+        val sameDimensions = sourceWidth == imageWidth && sourceHeight == imageHeight
+        val displayed = if (sameDimensions) textRegions.map {
+            MaskRegion(it.left, it.top, it.right, it.bottom)
+        } else emptyList()
+        val detected = regions.map {
+            MaskRegion(it.left.toFloat(), it.top.toFloat(), it.right.toFloat(), it.bottom.toFloat())
+        }
+        val newRegions = MaskJitterFilter.stabilize(
+            displayed,
+            detected,
+            if (animated) jitterTolerancePx else 0f,
+            if (width > 0) width.toFloat() / imageWidth.coerceAtLeast(1) else 1f,
+        ).map { RectF(it.left, it.top, it.right, it.bottom) }
         // Faster OCR often returns the very same mask while its fade is still
         // running. Let that animation finish instead of restarting it.
         if (animated && revealTarget == 1f && newRegions == textRegions &&
