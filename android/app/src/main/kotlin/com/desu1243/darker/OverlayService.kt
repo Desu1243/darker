@@ -30,6 +30,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.util.concurrent.Executors
 import kotlin.math.abs
 
 class OverlayService : Service() {
@@ -96,6 +97,10 @@ class OverlayService : Service() {
     private var lastFrameSignature: IntArray? = null
     private var motionActive = false
     private var ocrInFlight = false
+    private val reconstructionWorker = Executors.newSingleThreadExecutor()
+    private val reconstructor = OverlayFrameReconstructor()
+    private var reconstructionSession = ""
+    private var validatedRotation = 0
     private var captureGeneration = 0
     private var pendingFrameAvailable = false
 
@@ -165,6 +170,8 @@ class OverlayService : Service() {
         releaseCapture()
         textRecognizer?.close()
         textRecognizer = null
+        reconstructionWorker.execute { reconstructor.close() }
+        reconstructionWorker.shutdown()
         removeOverlay()
         isRunning = false
         isTextAwareEnabled = false
@@ -257,7 +264,7 @@ class OverlayService : Service() {
         mediaProjection = projection
         projection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                mainHandler.post { releaseCapture() }
+                mainHandler.post { if (mediaProjection === projection) releaseCapture() }
             }
         }, mainHandler)
 
@@ -294,6 +301,10 @@ class OverlayService : Service() {
             mainHandler
         )
         isCaptureRunning = true
+        @Suppress("DEPRECATION")
+        validatedRotation = windowManager.defaultDisplay.rotation
+        reconstructionSession = "${Build.FINGERPRINT}|${width}x$height|$validatedRotation|${System.nanoTime()}"
+        if (isDebugBuild()) Log.d(TAG, "Reconstruction calibration session: $reconstructionSession")
         Log.i(TAG, "Screen capture started: ${width}x$height")
     }
 
@@ -358,39 +369,120 @@ class OverlayService : Service() {
     }
 
     private fun startOcr(image: Image, now: Long) {
-        if (ocrInFlight) return
+        if (ocrInFlight) {
+            image.close()
+            return
+        }
         ocrInFlight = true
         lastOcrAtMs = now
         val generation = captureGeneration
 
-        val bitmap = imageToBitmap(image)
-        val recognizer = textRecognizer ?: TextRecognition
-            .getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            .also { textRecognizer = it }
-        recognizer.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { result ->
-                if (!isCaptureRunning || generation != captureGeneration) {
-                    return@addOnSuccessListener
+        val snapshot = overlayView?.reconstructionSnapshot()
+        val acquiredNanos = System.nanoTime()
+        val timestampNanos = image.timestamp
+        val width = image.width
+        val height = image.height
+        val prefs = getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE)
+        @Suppress("DEPRECATION")
+        val rotationMatches = windowManager.defaultDisplay.rotation == validatedRotation
+        // This debug-only, session-scoped attestation covers overlay inclusion,
+        // compositor model, identity mapping, timestamp clock and presentation lag.
+        val validated = isDebugBuild() && rotationMatches &&
+            prefs.getBoolean("reconstructionEnabled", false) &&
+            prefs.getString("reconstructionValidatedSession", null) == reconstructionSession
+        val crop = image.cropRect
+        val fullCrop = crop.left == 0 && crop.top == 0 && crop.right == width && crop.bottom == height
+        val bypass = if (!fullCrop) "capture-crop" else OverlayFrameEligibility.bypassReason(
+            validated, snapshot, width, height, timestampNanos, acquiredNanos,
+            generation, captureGeneration,
+        )
+        reconstructionWorker.execute {
+            var bitmap: Bitmap? = null
+            try {
+                bitmap = image.use { imageToBitmap(it) }
+                val started = System.nanoTime()
+                var metrics: OverlayFrameReconstructor.Metrics? = null
+                var reason = bypass
+                if (reason == null && snapshot != null) {
+                    try {
+                        metrics = reconstructor.reconstruct(bitmap, snapshot)
+                        if (metrics == null) reason = "unsafe-alpha-or-bitmap"
+                    } catch (error: Exception) {
+                        reason = "reconstruction-error"
+                        if (isDebugBuild()) Log.w(TAG, "Reconstruction bypass", error)
+                    } catch (error: OutOfMemoryError) {
+                        reconstructor.close()
+                        reason = "reconstruction-memory"
+                    }
                 }
-                val boxes = mutableListOf<Rect>()
-                result.textBlocks.forEach { block ->
-                    block.lines.forEach { line -> line.boundingBox?.let { boxes.add(Rect(it)) } }
+                if (isDebugBuild()) Log.d(TAG,
+                    "Reconstruction ${reason ?: "applied"} ${width}x$height " +
+                        "version=${snapshot?.version} ageMs=${(acquiredNanos - timestampNanos) / 1_000_000} " +
+                        "durationMs=${(System.nanoTime() - started) / 1_000_000.0} metrics=$metrics")
+                val ownedBitmap = bitmap
+                mainHandler.post {
+                    if (!isCaptureRunning || generation != captureGeneration) {
+                        ownedBitmap.recycle()
+                        finishOcr()
+                    } else {
+                        recognizeBitmap(ownedBitmap, generation)
+                    }
                 }
-                overlayView?.setTextRegions(
-                    boxes,
-                    bitmap.width,
-                    bitmap.height,
-                    animated = true,
-                )
-                ignoreMotionUntilMs = SystemClock.uptimeMillis() + 360L
-                Log.v(TAG, "OCR found ${boxes.size} text lines")
+            } catch (error: Exception) {
+                image.close()
+                bitmap?.recycle()
+                Log.w(TAG, "Capture conversion failed", error)
+                mainHandler.post { finishOcr() }
+            } catch (error: OutOfMemoryError) {
+                image.close()
+                bitmap?.recycle()
+                reconstructor.close()
+                mainHandler.post { finishOcr() }
             }
-            .addOnFailureListener { error -> Log.w(TAG, "OCR failed", error) }
-            .addOnCompleteListener {
-                bitmap.recycle()
-                ocrInFlight = false
-                if (pendingFrameAvailable) schedulePendingFrameDrain()
-            }
+        }
+    }
+
+    private fun isDebugBuild() =
+        (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    private fun finishOcr() {
+        ocrInFlight = false
+        if (pendingFrameAvailable) schedulePendingFrameDrain()
+    }
+
+    private fun recognizeBitmap(bitmap: Bitmap, generation: Int) {
+        try {
+            val recognizer = textRecognizer ?: TextRecognition
+                .getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                .also { textRecognizer = it }
+            recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                .addOnSuccessListener { result ->
+                    if (!isCaptureRunning || generation != captureGeneration) {
+                        return@addOnSuccessListener
+                    }
+                    val boxes = mutableListOf<Rect>()
+                    result.textBlocks.forEach { block ->
+                        block.lines.forEach { line -> line.boundingBox?.let { boxes.add(Rect(it)) } }
+                    }
+                    overlayView?.setTextRegions(
+                        boxes,
+                        bitmap.width,
+                        bitmap.height,
+                        animated = true,
+                    )
+                    ignoreMotionUntilMs = SystemClock.uptimeMillis() + 360L
+                    if (isDebugBuild()) Log.v(TAG, "OCR found ${boxes.size} text lines")
+                }
+                .addOnFailureListener { error -> Log.w(TAG, "OCR failed", error) }
+                .addOnCompleteListener {
+                    bitmap.recycle()
+                    finishOcr()
+                }
+        } catch (error: Exception) {
+            bitmap.recycle()
+            finishOcr()
+            Log.w(TAG, "OCR failed to start", error)
+        }
     }
 
     private fun schedulePendingFrameDrain() {
@@ -412,27 +504,23 @@ class OverlayService : Service() {
             return
         }
         pendingFrameAvailable = false
-        image.use { acceptCapturedFrame(it) }
+        try {
+            acceptCapturedFrame(image) // startOcr transfers ownership to the worker.
+        } catch (error: Exception) {
+            image.close()
+            finishOcr()
+            Log.w(TAG, "Capture frame rejected", error)
+        }
     }
 
-    private fun imageToBitmap(image: Image): Bitmap {
-        val plane = image.planes[0]
-        val paddedWidth = image.width +
-            (plane.rowStride - plane.pixelStride * image.width) / plane.pixelStride
-        val padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
-        plane.buffer.rewind()
-        padded.copyPixelsFromBuffer(plane.buffer)
-        if (paddedWidth == image.width) return padded
-
-        val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
-        padded.recycle()
-        return cropped
-    }
+    private fun imageToBitmap(image: Image): Bitmap = CapturedFrameBitmap.copy(image)
 
     private fun releaseCapture() {
         captureGeneration++
         isCaptureRunning = false
-        ocrInFlight = false
+        // An old worker/ML Kit task retains ownership until its completion.
+        // Keep the global slot occupied across capture generation changes.
+        reconstructionSession = ""
         pendingFrameAvailable = false
         mainHandler.removeCallbacks(pendingFrameDrain)
         lastFrameSignature = null
@@ -442,8 +530,13 @@ class OverlayService : Service() {
         overlayView?.clearTextRegions()
         virtualDisplay?.release()
         virtualDisplay = null
-        imageReader?.close()
+        val releasedReader = imageReader
         imageReader = null
+        // Serialize close after any acquired Image is copied on the worker.
+        if (!reconstructionWorker.isShutdown) reconstructionWorker.execute {
+            releasedReader?.close()
+            reconstructor.close()
+        } else releasedReader?.close()
         val projection = mediaProjection
         mediaProjection = null
         projection?.stop()

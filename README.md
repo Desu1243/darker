@@ -14,9 +14,20 @@ the application underneath it.
   cut-outs;
 - independent text-area opacity, adjustable live while the overlay is active;
 - continuous text recognition with a smooth fade transition;
+- live OCR refresh interval from 50 to 500 ms, with fades lasting half the interval;
+- configurable rectangle jitter tolerance from 0 to 20 screen pixels;
 - configurable text margin, corner radius, and edge softness;
 - persistent storage for every user-adjustable setting;
-- Flutter/native state synchronization through a method channel.
+- Flutter/native state synchronization through a method channel;
+- separate Dimmer and Settings pages with bottom navigation;
+- configurable overlay shutdown when the app is removed from recent apps.
+
+## Technical documentation
+
+See [Project and rendering documentation](docs/PROJECT_DOCUMENTATION.md) for
+the architecture, settings, lifecycle, capture/OCR scheduling, rectangle
+stabilization, opacity equations, Canvas mask composition, animation behavior,
+and current limitations.
 
 Screen opacity is intentionally the inverse of the effective black overlay
 alpha: 100% means no dimming and 0% means maximum dimming. The overlay window
